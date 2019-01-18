@@ -1,0 +1,517 @@
+diff --git a/crypto/cryptodev.h b/crypto/cryptodev.h
+index 7fb9c7d..8ccb0c5 100644
+--- a/crypto/cryptodev.h
++++ b/crypto/cryptodev.h
+@@ -43,6 +43,10 @@ enum cryptodev_crypto_op_t {
+ 	CRYPTO_AES_ECB = 23,
+ 	CRYPTO_AES_GCM = 50,
+ 
++	CRYPTO_ASYM_ECDSA_SIGN = 70,
++	CRYPTO_ASYM_ECDSA_VERIFY = 71,
++	CRYPTO_ASYM_ECC_GENKEY = 72,
++	
+ 	CRYPTO_CAMELLIA_CBC = 101,
+ 	CRYPTO_RIPEMD160,
+ 	CRYPTO_SHA2_224,
+@@ -82,7 +86,7 @@ struct session_op {
+ 	 */
+ 	__u32	cipher;		/* cryptodev_crypto_op_t */
+ 	__u32	mac;		/* cryptodev_crypto_op_t */
+-
++	__u32	pk_cipher;	/* cryptodev_crk_op_t */
+ 	__u32	keylen;
+ 	__u8	__user *key;
+ 	__u32	mackeylen;
+@@ -238,7 +242,9 @@ struct crparam {
+ 
+ /* input of CIOCKEY */
+ struct crypt_kop {
++	__u32	ses;		/* session identifier */
+ 	__u32	crk_op;		/* cryptodev_crk_op_t */
++	__u32	crk_flags;     /* public key cipher operation flags */
+ 	__u32	crk_status;
+ 	__u16	crk_iparams;
+ 	__u16	crk_oparams;
+@@ -252,6 +258,9 @@ enum cryptodev_crk_op_t {
+ 	CRK_DSA_SIGN = 2,
+ 	CRK_DSA_VERIFY = 3,
+ 	CRK_DH_COMPUTE_KEY = 4,
++	CRK_ECDSA_SIGN = 18,
++	CRK_ECDSA_VERIFY = 19,
++	CRK_ECC_GENKEY = 20,
+ 	CRK_ALGORITHM_ALL
+ };
+ 
+@@ -265,6 +274,9 @@ enum cryptodev_crk_op_t {
+ #define CRF_DSA_VERIFY		(1 << CRK_DSA_VERIFY)
+ #define CRF_DH_COMPUTE_KEY	(1 << CRK_DH_COMPUTE_KEY)
+ 
++#define CRF_ECDSA_SIGN			(1 << CRK_ECDSA_SIGN)
++#define CRF_ECDSA_VERIFY		(1 << CRK_ECDSA_VERIFY)
++#define CRF_ECC_GENKEY			(1 << CRK_ECC_GENKEY)
+ 
+ /* ioctl's. Compatible with old linux cryptodev.h
+  */
+@@ -289,4 +301,7 @@ enum cryptodev_crk_op_t {
+ #define CIOCASYNCCRYPT    _IOW('c', 110, struct crypt_op)
+ #define CIOCASYNCFETCH    _IOR('c', 111, struct crypt_op)
+ 
++#define	CAAM_KEY_COLOR_NONE		0
++#define	CAAM_KEY_COLOR_BLACK	1
++
+ #endif /* L_CRYPTODEV_H */
+diff --git a/cryptodev_int.h b/cryptodev_int.h
+index d7660fa..3f345c5 100644
+--- a/cryptodev_int.h
++++ b/cryptodev_int.h
+@@ -106,6 +106,13 @@ struct kernel_crypt_auth_op {
+ 	struct mm_struct *mm;
+ };
+ 
++struct kernel_crypt_kop {
++	struct crypt_kop kop;
++
++	struct task_struct *task;
++	struct mm_struct *mm;
++};
++
+ /* auth */
+ 
+ int kcaop_from_user(struct kernel_crypt_auth_op *kcop,
+@@ -114,7 +121,7 @@ int kcaop_to_user(struct kernel_crypt_auth_op *kcaop,
+ 		struct fcrypt *fcr, void __user *arg);
+ int crypto_auth_run(struct fcrypt *fcr, struct kernel_crypt_auth_op *kcaop);
+ int crypto_run(struct fcrypt *fcr, struct kernel_crypt_op *kcop);
+-
++int crypto_pk_run(struct fcrypt *fcr, struct kernel_crypt_kop *kckop);
+ #include <cryptlib.h>
+ 
+ /* other internal structs */
+diff --git a/ioctl.c b/ioctl.c
+index 0385203..5f3669f 100644
+--- a/ioctl.c
++++ b/ioctl.c
+@@ -53,6 +53,7 @@
+ #include "zc.h"
+ #include "version.h"
+ #include "cipherapi.h"
++#include "pk_crypto.h"
+ 
+ MODULE_AUTHOR("Nikos Mavrogiannopoulos <nmav@gnutls.org>");
+ MODULE_DESCRIPTION("CryptoDev driver");
+@@ -124,7 +125,7 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
+ 	} keys;
+ 
+ 	/* Does the request make sense? */
+-	if (unlikely(!sop->cipher && !sop->mac)) {
++	if (unlikely(!sop->cipher && !sop->mac && !sop->pk_cipher)) {
+ 		ddebug(1, "Both 'cipher' and 'mac' unset.");
+ 		return -EINVAL;
+ 	}
+@@ -234,6 +235,9 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
+ 	if (!ses_new)
+ 		return -ENOMEM;
+ 
++	if (0 != sop->pk_cipher) 
++		goto asymmetric_cipher;	
++		
+ 	/* Set-up crypto transform. */
+ 	if (alg_name) {
+ 		unsigned int keylen;
+@@ -300,7 +304,7 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
+ 		ret = -ENOMEM;
+ 		goto session_error;
+ 	}
+-
++asymmetric_cipher:
+ 	/* put the new session to the list */
+ 	get_random_bytes(&ses_new->sid, sizeof(ses_new->sid));
+ 	mutex_init(&ses_new->sem);
+@@ -721,6 +725,29 @@ static int kcop_to_user(struct kernel_crypt_op *kcop,
+ 	return 0;
+ }
+ 
++static int kcpkop_from_user(struct kernel_crypt_kop *kckop,
++                  struct fcrypt *fcr, void __user *arg)
++{
++    if (unlikely(copy_from_user(&kckop->kop, arg, sizeof(kckop->kop)))){
++        return -EFAULT;
++	}	
++	else{
++	kckop->task = current;
++	kckop->mm = current->mm;
++    return 0;
++	}
++}
++
++static int kcpkop_to_user(struct kernel_crypt_kop *kckop,
++			struct fcrypt *fcr, void __user *arg)
++{
++    if (unlikely(copy_to_user(arg, &kckop->kop, sizeof(kckop->kop)))) {
++        derr(1, "Cannot copy to userspace");
++        return -EFAULT;
++    }
++    return 0;
++}
++
+ static inline void tfm_info_to_alg_info(struct alg_info *dst, struct crypto_tfm *tfm)
+ {
+ 	snprintf(dst->cra_name, CRYPTODEV_MAX_ALG_NAME,
+@@ -810,11 +837,12 @@ cryptodev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg_)
+ 	struct session_op sop;
+ 	struct kernel_crypt_op kcop;
+ 	struct kernel_crypt_auth_op kcaop;
++	struct kernel_crypt_kop kckop;
+ 	struct crypt_priv *pcr = filp->private_data;
+ 	struct fcrypt *fcr;
+ 	struct session_info_op siop;
+ 	uint32_t ses;
+-	int ret, fd;
++	int ret, fd, asymfeat;
+ 
+ 	if (unlikely(!pcr))
+ 		BUG();
+@@ -823,7 +851,25 @@ cryptodev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg_)
+ 
+ 	switch (cmd) {
+ 	case CIOCASYMFEAT:
+-		return put_user(0, p);
++		if( 0 != caam_pk_status())
++		{			
++			asymfeat = CRF_ECDSA_SIGN | CRF_ECDSA_VERIFY | CRF_ECC_GENKEY;
++			return put_user(asymfeat, p);
++		}
++		else
++			return put_user(0, p);
++	case CIOCKEY:
++		if (unlikely(ret = kcpkop_from_user(&kckop, fcr, arg))) {
++			dwarning(1, "Error copying from user");
++			return ret;
++		}
++
++		ret = crypto_pk_run(fcr, &kckop);
++		if (unlikely(ret)) {
++			dwarning(1, "Error in crypto_pk_run");
++			return ret;
++		}
++		return kcpkop_to_user(&kckop, fcr, arg);			
+ 	case CRIOGET:
+ 		fd = clonefd(filp);
+ 		ret = put_user(fd, p);
+@@ -994,13 +1040,14 @@ static int compat_kcop_to_user(struct kernel_crypt_op *kcop,
+ static long
+ cryptodev_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg_)
+ {
+-	void __user *arg = (void __user *)arg_;
++	int __user *arg = (void __user *)arg_;
+ 	struct crypt_priv *pcr = file->private_data;
+ 	struct fcrypt *fcr;
+ 	struct session_op sop;
+ 	struct compat_session_op compat_sop;
+ 	struct kernel_crypt_op kcop;
+-	int ret;
++	struct kernel_crypt_kop kckop;
++	int ret, asymfeat;
+ 
+ 	if (unlikely(!pcr))
+ 		BUG();
+@@ -1009,6 +1056,13 @@ cryptodev_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg_)
+ 
+ 	switch (cmd) {
+ 	case CIOCASYMFEAT:
++		if( 0 != caam_pk_status())
++		{			
++			asymfeat = CRF_ECDSA_SIGN | CRF_ECDSA_VERIFY | CRF_ECC_GENKEY;
++			return put_user(asymfeat, arg);
++		}
++		else
++			return put_user(0, arg);				
+ 	case CRIOGET:
+ 	case CIOCFSESSION:
+ 	case CIOCGSESSINFO:
+@@ -1042,6 +1096,19 @@ cryptodev_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg_)
+ 			return ret;
+ 
+ 		return compat_kcop_to_user(&kcop, fcr, arg);
++	case CIOCKEY:
++		if (unlikely(ret = kcpkop_from_user(&kckop, fcr, arg))) {
++			dwarning(1, "Error copying from user");
++			return ret;
++		}
++
++		ret = crypto_pk_run(fcr, &kckop);
++		if (unlikely(ret)) {
++			dwarning(1, "Error in crypto_pk_run");
++			return ret;
++		}
++
++		return kcpkop_to_user(&kckop, fcr, arg);		
+ #ifdef ENABLE_ASYNC
+ 	case COMPAT_CIOCASYNCCRYPT:
+ 		if (unlikely(ret = compat_kcop_from_user(&kcop, fcr, arg)))
+@@ -1124,7 +1191,7 @@ static struct ctl_table verbosity_ctl_dir[] = {
+ 		.mode           = 0644,
+ 		.proc_handler   = proc_dointvec,
+ 	},
+-	{0, },
++	{},
+ };
+ 
+ static struct ctl_table verbosity_ctl_root[] = {
+@@ -1133,7 +1200,7 @@ static struct ctl_table verbosity_ctl_root[] = {
+ 		.mode           = 0555,
+ 		.child          = verbosity_ctl_dir,
+ 	},
+-	{0, },
++	{},
+ };
+ static struct ctl_table_header *verbosity_sysctl_header;
+ static int __init init_cryptodev(void)
+diff --git a/main.c b/main.c
+index 57e5c38..087cba2 100644
+--- a/main.c
++++ b/main.c
+@@ -48,6 +48,7 @@
+ #include "zc.h"
+ #include "cryptlib.h"
+ #include "version.h"
++#include "pk_crypto.h"
+ 
+ /* This file contains the traditional operations of encryption
+  * and hashing of /dev/crypto.
+@@ -265,3 +266,162 @@ out_unlock:
+ 	crypto_put_session(ses_ptr);
+ 	return ret;
+ }
++
++int crypto_pk_run(struct fcrypt *fcr, struct kernel_crypt_kop *kckop)
++{
++	struct csession *ses_ptr = NULL;
++	struct crypt_kop *kop = &kckop->kop;
++	int ret = 0;
++
++	if (unlikely(kop->crk_op >= CRK_ALGORITHM_ALL)) {
++		dwarning(1, "invalid operation op=%u", kop->crk_op);
++		return -EINVAL;
++	}
++
++	/* this also enters ses_ptr->sem */
++	ses_ptr = crypto_get_session_by_sid(fcr, kop->ses);
++	if (unlikely(!ses_ptr)) {
++		derr(1, "invalid session ID=0x%08X", kop->ses);
++		return -EINVAL;
++	}
++	if (likely(kop->crk_op >= CRK_DSA_SIGN)) {
++		switch (kop->crk_op) {
++		case CRK_ECDSA_SIGN:
++			{
++				caam_ecdsa_sign_t ecdsa_sign;
++				if (unlikely(kop->crk_iparams < 2)) {
++					derr(1, "invalid parameters iparams=0x%08X \n", kop->crk_iparams);
++					ret = -EINVAL;
++					goto out_unlock;
++				}
++				// L_LEN from C
++				if (likely((kop->crk_param[2].crp_nbits + 7)/8 <= 0x7F))
++					ecdsa_sign.n_len = (kop->crk_param[2].crp_nbits + 7)/8;
++				else
++					derr(1, "N more than 7 bits \n");
++				// P_LEN from S	
++				if (likely((kop->crk_param[0].crp_nbits + 7)/8 <= 0x3FF))
++					ecdsa_sign.p_len = (kop->crk_param[0].crp_nbits + 7)/8;
++				else
++					derr(1, "P more than 10 bits \n");
++				ecdsa_sign.key_color = kop->crk_flags & 1;
++				ret = caam_ecdsa_sign_init(&ecdsa_sign);
++				if(unlikely(0 != ret)) {
++					derr(1, "caam_ecdsa_sign_init error \n");
++		            ret = -EFAULT;
++					goto out_unlock;
++				}
++				if (unlikely(copy_from_user(ecdsa_sign.addr_s, kop->crk_param[0].crp_p, ecdsa_sign.n_len))) {
++					derr(1, "copy_from_user error s \n");
++					printk("copy_from_user error s \n");
++		            ret = -EFAULT;
++		            goto out_ecdsa_sign;
++		        }
++				if (unlikely(copy_from_user(ecdsa_sign.addr_f, kop->crk_param[1].crp_p, ecdsa_sign.n_len))) {
++					derr(1, "copy_from_user error f \n");
++					printk("copy_from_user error f \n");
++		            ret = -EFAULT;
++		            goto out_ecdsa_sign;
++		        }
++				ret = caam_ecdsa_sign(&ecdsa_sign);
++				if(unlikely(0 != ret))
++					derr(1, "ECDSA sign error code =0x%08X", ret);
++				else {
++					if (unlikely(copy_to_user(kop->crk_param[kop->crk_iparams].crp_p, ecdsa_sign.addr_c, ecdsa_sign.n_len)))
++						ret = -EFAULT;
++					if (unlikely(copy_to_user(kop->crk_param[kop->crk_iparams+1].crp_p, ecdsa_sign.addr_d, ecdsa_sign.n_len)))
++						ret = -EFAULT;
++				}
++			out_ecdsa_sign:
++				caam_ecdsa_sign_deinit(&ecdsa_sign);
++			}
++			break;
++		case CRK_ECDSA_VERIFY:
++			{
++				caam_ecdsa_verify_t ecdsa_verify;
++				if (unlikely(kop->crk_iparams < 4)) {
++					derr(1, "invalid parameters iparams=0x%08X \n", kop->crk_iparams);
++					ret = -EINVAL;
++					goto out_unlock;
++				}
++				if (likely((kop->crk_param[0].crp_nbits + 7)/8 <= 0x3FF))
++					ecdsa_verify.p_len = ((kop->crk_param[0].crp_nbits + 7)/8)/2;
++				else
++					derr(1, "P more than 10 bits \n");
++				if (likely((kop->crk_param[2].crp_nbits + 7)/8 <= 0x7F))
++					ecdsa_verify.n_len = (kop->crk_param[2].crp_nbits + 7)/8;
++				else
++					derr(1, "N more than 7 bits \n");
++				ecdsa_verify.key_color = kop->crk_flags & 1;
++				ret = caam_ecdsa_verify_init(&ecdsa_verify);
++				if(unlikely(0 != ret)) {
++					derr(1, "caam_ecdsa_verify_init error \n");
++		            ret = -EFAULT;
++					goto out_unlock;
++				}
++				if (unlikely(copy_from_user(ecdsa_verify.addr_w, kop->crk_param[0].crp_p, ecdsa_verify.p_len * 2))) {
++					derr(1, "copy_from_user error w \n");
++		            ret = -EFAULT;
++		            goto out_ecdsa_verify;
++		        }
++				if (unlikely(copy_from_user(ecdsa_verify.addr_f, kop->crk_param[1].crp_p, ecdsa_verify.n_len))) {
++					derr(1, "copy_from_user error f \n");
++		            ret = -EFAULT;
++		            goto out_ecdsa_verify;
++				}
++				if (unlikely(copy_from_user(ecdsa_verify.addr_c, kop->crk_param[2].crp_p, ecdsa_verify.n_len))) {
++					derr(1, "copy_from_user error c \n");
++		            ret = -EFAULT;
++		            goto out_ecdsa_verify;
++				}
++				if (unlikely(copy_from_user(ecdsa_verify.addr_d, kop->crk_param[3].crp_p, ecdsa_verify.n_len))) {
++					derr(1, "copy_from_user error d \n");
++		            ret = -EFAULT;
++		            goto out_ecdsa_verify;
++				}
++				ret = caam_ecdsa_verify(&ecdsa_verify);
++				if (false == ret)
++					kop->crk_status = 0;
++				else {
++					kop->crk_status = 1;
++					ret = 0;
++				}
++					
++			out_ecdsa_verify:
++				caam_ecdsa_verify_deinit(&ecdsa_verify);
++			}
++			break;
++		case CRK_ECC_GENKEY:
++			{
++				caam_ecdsa_genkey_t ecdsa_genkey;
++				// P_LEN from S	
++				if (likely((kop->crk_param[0].crp_nbits + 7)/8 <= 0x3FF))
++					ecdsa_genkey.p_len = (kop->crk_param[0].crp_nbits + 7)/8;
++				else
++					derr(1, "P more than 10 bits \n");
++				ecdsa_genkey.key_color = kop->crk_flags & 1;
++				ret = caam_ecdsa_genkey_init(&ecdsa_genkey);
++				if(unlikely(0 != ret)) {
++					derr(1, "caam_ecdsa_genkey_init error\n");
++		            ret = -EFAULT;
++					goto out_unlock;
++				}
++				ret = caam_ecdsa_genkey(&ecdsa_genkey);
++				if(unlikely(0 != ret))
++					derr(1, "ECC genkey error code =0x%08X", ret);
++				else {
++					if (unlikely(copy_to_user(kop->crk_param[kop->crk_iparams].crp_p, ecdsa_genkey.addr_s, ecdsa_genkey.p_len)))
++						ret = -EFAULT;
++					if (unlikely(copy_to_user(kop->crk_param[kop->crk_iparams+1].crp_p, ecdsa_genkey.addr_w, ecdsa_genkey.p_len*2)))
++						ret = -EFAULT;
++				}
++				caam_ecdsa_genkey_deinit(&ecdsa_genkey);
++			}
++			break;			
++
++		}
++	}
++out_unlock:
++	crypto_put_session(ses_ptr);
++	return ret;
++}
+diff --git a/pk_crypto.h b/pk_crypto.h
+new file mode 100644
+index 0000000..e862416
+--- /dev/null
++++ b/pk_crypto.h
+@@ -0,0 +1,67 @@
++/*
++ * Public Key Cryptography Operations of CAAM
++ * Copyright (C) 2016-2018 NXP Semiconductor, Inc. All Rights Reserved
++ *
++ */
++ 
++#ifndef PK_CRYPTO_H
++#define PK_CRYPTO_H
++
++/* Max size of any CAAM descriptor in 32-bit words, inclusive of header */
++#define MAX_CAAM_DESCSIZE	64
++
++typedef struct {
++	u8 *addr_s;
++	u8 *addr_f;
++	u8 *addr_c;
++	u8 *addr_d;
++	dma_addr_t phy_addr_s;
++	dma_addr_t phy_addr_f;
++	dma_addr_t phy_addr_c;
++	dma_addr_t phy_addr_d;
++	u32 p_len;
++	u32 n_len;
++	u8 key_color;
++	u32 *desc;
++}caam_ecdsa_sign_t;
++
++typedef struct {
++	u8 *addr_w;
++	u8 *addr_f;
++	u8 *addr_c;
++	u8 *addr_d;
++	u8 *addr_tmp;
++	dma_addr_t phy_addr_w;
++	dma_addr_t phy_addr_f;
++	dma_addr_t phy_addr_c;
++	dma_addr_t phy_addr_d;
++	dma_addr_t phy_addr_tmp;
++	u32 p_len;
++	u32 n_len;
++	u8 key_color;	
++	u32 *desc;
++}caam_ecdsa_verify_t;
++
++typedef struct {
++	u8 *addr_s;
++	u8 *addr_w;
++	dma_addr_t phy_addr_s;
++	dma_addr_t phy_addr_w;
++	u32 p_len;
++	u8 key_color;	
++	u32 *desc;
++}caam_ecdsa_genkey_t;
++
++int caam_pk_status(void);
++struct device *caam_ecdsa_get_jrdev(void);
++int caam_ecdsa_sign_init(caam_ecdsa_sign_t *ecdsa_sign);
++int caam_ecdsa_sign_deinit(caam_ecdsa_sign_t *ecdsa_sign);
++int caam_ecdsa_sign(caam_ecdsa_sign_t *ecdsa_sign);
++int caam_ecdsa_verify_init(caam_ecdsa_verify_t *ecdsa_verify);
++int caam_ecdsa_verify_deinit(caam_ecdsa_verify_t *ecdsa_verify);
++int caam_ecdsa_verify(caam_ecdsa_verify_t *ecdsa_verify);
++int caam_ecdsa_genkey_init(caam_ecdsa_genkey_t *ecdsa_genkey);
++int caam_ecdsa_genkey_deinit(caam_ecdsa_genkey_t *ecdsa_genkey);
++int caam_ecdsa_genkey(caam_ecdsa_genkey_t *ecdsa_genkey);
++#endif /* PK_CRYPTO_H */
++ 
