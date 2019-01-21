@@ -1,11 +1,23 @@
+From cf9ba2ba1e3ff02ad9de3fa7a18ba0532cdb477c Mon Sep 17 00:00:00 2001
+From: Marouene Boubakri <marouene.boubakri@nxp.com>
+Date: Mon, 21 Jan 2019 15:24:19 +0100
+Subject: [PATCH 1/2] second
+
+---
+ drivers/crypto/caam/Kconfig      |  11 +
+ drivers/crypto/caam/Makefile     |   1 +
+ drivers/crypto/caam/caam_ecdsa.c | 852 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 864 insertions(+)
+ create mode 100644 drivers/crypto/caam/caam_ecdsa.c
+
 diff --git a/drivers/crypto/caam/Kconfig b/drivers/crypto/caam/Kconfig
-index 4b9168f..f692c70 100644
+index 4b9168f..056a745 100644
 --- a/drivers/crypto/caam/Kconfig
 +++ b/drivers/crypto/caam/Kconfig
-@@ -121,6 +121,17 @@ config CRYPTO_DEV_FSL_CAAM_PKC_API
+@@ -130,6 +130,17 @@ config CRYPTO_DEV_FSL_CAAM_PKC_API
            To compile this as a module, choose M here: the module
            will be called caam_pkc.
-
+ 
 +config CRYPTO_DEV_FSL_CAAM_ECDSA_API
 +        tristate "Register ECDSA primitives implementations using CAAM"
 +        depends on CRYPTO_DEV_FSL_CAAM_JR
@@ -24,17 +36,17 @@ diff --git a/drivers/crypto/caam/Makefile b/drivers/crypto/caam/Makefile
 index 229e7d9..fc058f6 100644
 --- a/drivers/crypto/caam/Makefile
 +++ b/drivers/crypto/caam/Makefile
-@@ -16,6 +16,7 @@ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_PKC_API) += caam_pkc.o
+@@ -17,6 +17,7 @@ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_PKC_API) += caam_pkc.o
  obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM) += sm_store.o
  obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM_TEST) += sm_test.o
  obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SECVIO) += secvio.o
 +obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_ECDSA_API) += caam_ecdsa.o
-
+ 
  caam-objs := ctrl.o
  caam_jr-objs := jr.o key_gen.o error.o inst_rng.o
 diff --git a/drivers/crypto/caam/caam_ecdsa.c b/drivers/crypto/caam/caam_ecdsa.c
 new file mode 100644
-index 0000000..afaddeb
+index 0000000..8ec2983
 --- /dev/null
 +++ b/drivers/crypto/caam/caam_ecdsa.c
 @@ -0,0 +1,852 @@
@@ -890,3 +902,6 @@ index 0000000..afaddeb
 +module_exit(caam_ecdsa_exit);
 +MODULE_DESCRIPTION("CAAM ECDSA driver with Black Key support");
 +MODULE_LICENSE("Dual BSD/GPL");
+-- 
+2.7.4
+

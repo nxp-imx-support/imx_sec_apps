@@ -1,12 +1,23 @@
+From 6eb20913ef2d1566b12a479232ccb1c1738fe950 Mon Sep 17 00:00:00 2001
+From: Marouene Boubakri <marouene.boubakri@nxp.com>
+Date: Mon, 21 Jan 2019 15:41:56 +0100
+Subject: [PATCH 2/2] third
+
+---
+ drivers/crypto/caam/Kconfig   |    9 +
+ drivers/crypto/caam/Makefile  |    1 +
+ drivers/crypto/caam/caam_bk.c | 2839 +++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 2849 insertions(+)
+ create mode 100644 drivers/crypto/caam/caam_bk.c
+
 diff --git a/drivers/crypto/caam/Kconfig b/drivers/crypto/caam/Kconfig
-index f692c70..4cfe49d 100644
+index 056a745..a53e5ae 100644
 --- a/drivers/crypto/caam/Kconfig
 +++ b/drivers/crypto/caam/Kconfig
-@@ -133,6 +133,15 @@ config CRYPTO_DEV_FSL_CAAM_ECDSA_API
- 		  with black key support.
+@@ -141,6 +141,15 @@ config CRYPTO_DEV_FSL_CAAM_ECDSA_API
            To compile this as a module, choose M here: the module
            will be called caam_ecdsa.
-+
+ 
 +config CRYPTO_DEV_FSL_CAAM_BK_DEV
 +        tristate "Register caam device for black key management"
 +        depends on CRYPTO_DEV_FSL_CAAM_JR
@@ -15,24 +26,25 @@ index f692c70..4cfe49d 100644
 +          Selecting this will register a char device /dev/kb to manages black blobs and black keys.
 +          To compile this as a module, choose M here: the module
 +          will be called caam_bk.
-
++
  config CRYPTO_DEV_FSL_CAAM_RNG_API
  	tristate "Register caam device for hwrng API"
+ 	depends on CRYPTO_DEV_FSL_CAAM_JR
 diff --git a/drivers/crypto/caam/Makefile b/drivers/crypto/caam/Makefile
 index fc058f6..9be29d3 100644
 --- a/drivers/crypto/caam/Makefile
 +++ b/drivers/crypto/caam/Makefile
-@@ -17,6 +17,7 @@ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM) += sm_store.o
+@@ -18,6 +18,7 @@ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM) += sm_store.o
  obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM_TEST) += sm_test.o
  obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SECVIO) += secvio.o
  obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_ECDSA_API) += caam_ecdsa.o
 +obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_BK_DEV) += caam_bk.o
-
+ 
  caam-objs := ctrl.o
  caam_jr-objs := jr.o key_gen.o error.o inst_rng.o
 diff --git a/drivers/crypto/caam/caam_bk.c b/drivers/crypto/caam/caam_bk.c
 new file mode 100644
-index 0000000..4ca57af
+index 0000000..8bcdfa2
 --- /dev/null
 +++ b/drivers/crypto/caam/caam_bk.c
 @@ -0,0 +1,2839 @@
@@ -2875,3 +2887,6 @@ index 0000000..4ca57af
 +#define ADD_SW(_list, _sw) add_to_switch_list(&_list, &SW_NAME(_sw))
 +
 +#define SW_SELECT(_list, _sw) sw_list_get_sw_value(&_list, &SW_NAME(_sw))
+-- 
+2.7.4
+

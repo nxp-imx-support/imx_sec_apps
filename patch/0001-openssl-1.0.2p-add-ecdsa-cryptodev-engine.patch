@@ -1,3 +1,14 @@
+From fe10585bae25b40aeeef4ac1e6460d61a52c5495 Mon Sep 17 00:00:00 2001
+From: nxf45729 <marouene.boubakri@nxp.com>
+Date: Mon, 21 Jan 2019 13:42:22 +0100
+Subject: [PATCH] second
+
+Signed-off-by: nxf45729 <marouene.boubakri@nxp.com>
+---
+ crypto/ec/ec_key.c            |   9 +
+ crypto/engine/eng_cryptodev.c | 509 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 518 insertions(+)
+
 diff --git a/crypto/ec/ec_key.c b/crypto/ec/ec_key.c
 index 456080e..72f95a3 100644
 --- a/crypto/ec/ec_key.c
@@ -5,7 +16,7 @@ index 456080e..72f95a3 100644
 @@ -234,6 +234,15 @@ int EC_KEY_generate_key(EC_KEY *eckey)
      BIGNUM *priv_key = NULL, *order = NULL;
      EC_POINT *pub_key = NULL;
-
+ 
 +#ifdef HAVE_CRYPTODEV
 +#ifndef OPENSSL_NO_ENGINE
 +    extern int cryptodev_ec_keygen(EC_KEY *eckey);
@@ -19,7 +30,7 @@ index 456080e..72f95a3 100644
      if (FIPS_mode())
          return FIPS_ec_key_generate_key(eckey);
 diff --git a/crypto/engine/eng_cryptodev.c b/crypto/engine/eng_cryptodev.c
-index d8cac4b..9853064 100644
+index d8cac4b..b3cdefb 100644
 --- a/crypto/engine/eng_cryptodev.c
 +++ b/crypto/engine/eng_cryptodev.c
 @@ -59,6 +59,9 @@ void ENGINE_load_cryptodev(void)
@@ -35,7 +46,7 @@ index d8cac4b..9853064 100644
 @@ -1441,6 +1444,501 @@ static DH_METHOD cryptodev_dh = {
      NULL                        /* app_data */
  };
-
+ 
 +
 +/* Curve name to CAAM curve id conversion */
 +int cname2cid(int curve_name)
@@ -537,7 +548,7 @@ index d8cac4b..9853064 100644
 @@ -1541,6 +2039,17 @@ void ENGINE_load_cryptodev(void)
          }
      }
-
+ 
 +	if (ENGINE_set_ECDSA (engine, &cryptodev_ecdsa)) {
 +		const ECDSA_METHOD *ecdsa_meth = ECDSA_OpenSSL();
 +		cryptodev_ecdsa.ecdsa_sign_setup = ecdsa_meth->ecdsa_sign_setup;
@@ -552,3 +563,6 @@ index d8cac4b..9853064 100644
      ENGINE_add(engine);
      ENGINE_free(engine);
      ERR_clear_error();
+-- 
+2.7.4
+
