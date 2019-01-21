@@ -1,7 +1,7 @@
 From 6eb20913ef2d1566b12a479232ccb1c1738fe950 Mon Sep 17 00:00:00 2001
 From: Marouene Boubakri <marouene.boubakri@nxp.com>
 Date: Mon, 21 Jan 2019 15:41:56 +0100
-Subject: [PATCH 2/2] third
+Subject: [PATCH 2/2] CAAM Blackkey driver for linux-imx-4.14.78_1.0.0_ga
 
 ---
  drivers/crypto/caam/Kconfig   |    9 +

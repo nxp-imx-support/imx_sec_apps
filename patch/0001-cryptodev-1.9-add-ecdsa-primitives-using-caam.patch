@@ -1,7 +1,7 @@
 From cfeae282d3017e9b54a703361f9b80f1e8dacd85 Mon Sep 17 00:00:00 2001
 From: Marouene Boubakri <marouene.boubakri@nxp.com>
 Date: Mon, 21 Jan 2019 15:18:07 +0100
-Subject: [PATCH] second
+Subject: [PATCH] Add CAAM-ECDSA primitives to cryptodev-1.9
 
 ---
  crypto/cryptodev.h | 146 +++++++++++++++++++++++++++++++++++++++++++++++-

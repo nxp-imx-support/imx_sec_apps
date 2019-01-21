@@ -1,7 +1,7 @@
 From fe10585bae25b40aeeef4ac1e6460d61a52c5495 Mon Sep 17 00:00:00 2001
 From: nxf45729 <marouene.boubakri@nxp.com>
 Date: Mon, 21 Jan 2019 13:42:22 +0100
-Subject: [PATCH] second
+Subject: [PATCH] Add ECDSA with black key to OpenSSL's cryptodev engine 
 
 Signed-off-by: nxf45729 <marouene.boubakri@nxp.com>
 ---

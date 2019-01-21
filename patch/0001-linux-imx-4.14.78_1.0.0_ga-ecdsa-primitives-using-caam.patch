@@ -1,7 +1,7 @@
 From cf9ba2ba1e3ff02ad9de3fa7a18ba0532cdb477c Mon Sep 17 00:00:00 2001
 From: Marouene Boubakri <marouene.boubakri@nxp.com>
 Date: Mon, 21 Jan 2019 15:24:19 +0100
-Subject: [PATCH 1/2] second
+Subject: [PATCH 1/2] CAAM ECDSA driver for linux-imx-4.14.78_1.0.0_ga
 
 ---
  drivers/crypto/caam/Kconfig      |  11 +
