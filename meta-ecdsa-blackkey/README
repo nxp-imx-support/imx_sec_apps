@@ -4,7 +4,6 @@ Please see the corresponding sections below for details.
 
 Maintainer: Marouene Boubakri <marouene.boubakri@nxp.com>
 
-[+] Adding the meta-ecdsa-blackkey layer to your build
-=================================================
+To add the meta-ecdsa-blackkey layer to your build
 
 Run 'bitbake-layers add-layer meta-ecdsa-blackkey'
