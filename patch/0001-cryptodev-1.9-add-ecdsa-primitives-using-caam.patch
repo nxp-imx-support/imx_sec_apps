@@ -590,8 +590,8 @@ index 0000000..c7202dd
 --- /dev/null
 +++ b/pk_crypto.h
 @@ -0,0 +1,83 @@
-+/*
-+ * Public Key Cryptography Operations of CAAM
++/* SPDX-License-Identifier: GPL-2.0
++ *
 + * Copyright 2018-2019 NXP
 + *
 + */

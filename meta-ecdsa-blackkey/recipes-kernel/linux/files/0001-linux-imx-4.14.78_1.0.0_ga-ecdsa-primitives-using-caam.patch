@@ -50,11 +50,11 @@ index 0000000..8ec2983
 --- /dev/null
 +++ b/drivers/crypto/caam/caam_ecdsa.c
 @@ -0,0 +1,852 @@
-+/*
-+* CAAM ECDSA driver with Black key support
++/*SPDX-License-Identifier: GPL-2.0
++*
 +* Copyright 2018-2019 NXP
 +*
-+* A kernel module which exports functions to perform ECDSA operations,
++* caam_ecdsa.c: A kernel module which exports functions to perform ECDSA operations,
 +* (Sign, Verify, Key pair generation) using CAAM's black key mechanism.
 +*
 +* It was mainly developed as PoC.
