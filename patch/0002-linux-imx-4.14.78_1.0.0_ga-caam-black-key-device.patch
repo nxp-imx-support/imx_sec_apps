@@ -50,7 +50,7 @@ index 0000000..8bcdfa2
 @@ -0,0 +1,2839 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
-+ * Copyright 2018 NXP
++ * Copyright 2018-2019 NXP
 + *
 + * kb.c: Creates a char device /dev/kb that generates black blob keys from
 + * randomly generated plain.

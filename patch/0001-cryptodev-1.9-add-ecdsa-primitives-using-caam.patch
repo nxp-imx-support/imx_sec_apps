@@ -592,7 +592,7 @@ index 0000000..c7202dd
 @@ -0,0 +1,83 @@
 +/*
 + * Public Key Cryptography Operations of CAAM
-+ * Copyright (C) 2016-2018 NXP Semiconductor, Inc. All Rights Reserved
++ * Copyright 2018-2019 NXP
 + *
 + */
 +
