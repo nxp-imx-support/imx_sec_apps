@@ -614,5 +614,3 @@ MODULE_LICENSE("GPL");
 module_init( caam_sm2_init);
 module_exit( caam_sm2_exit);
 
-
-MODULE_INFO(vermagic, "4.14.78 SMP preempt mod_unload aarch64");
