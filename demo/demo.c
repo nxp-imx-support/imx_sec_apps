@@ -10,6 +10,9 @@
 *
 * This demo was written for OpenSSL 1.1.1-pre9.
 *
+* THIS CODE WAS MAINLY WRITTEN FOR DEMONSTRATION PURPOSE ONLY.
+* IT SHOULD NOT BE USED IN ANY CASE IN A PRODUCTION ENVIRONMENT.
+*
 **/
 
 #include <string.h>

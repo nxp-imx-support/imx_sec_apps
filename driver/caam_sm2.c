@@ -15,8 +15,8 @@
 *
 * Return value 1: means correct signature. 0: Incorrect signature. Otherwise: Error.
 *
-* This module was mainly developed as PoC.
-* It can be used with any other application for demo purpose only.
+* THIS CODE WAS MAINLY WRITTEN FOR DEMONSTRATION PURPOSE ONLY.
+* IT SHOULD NOT BE USED IN ANY CASE IN A PRODUCTION ENVIRONMENT.
 *
 **/
 
