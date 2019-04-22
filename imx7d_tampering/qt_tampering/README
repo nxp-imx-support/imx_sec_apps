@@ -1,0 +1,90 @@
+# QT Tampering application
+
+This repository contains code of implementation of QT application that proves the tampering mechanism for i.MX7D.
+All applications around this demo are in linux userspace.
+
+## 1. Introduction
+
+This implementation represents includes a proof of concept for tampering mechanism and
+also a graphical interface for a better illustration of what happens underneath.
+This application has an [application note] that best describes all the details
+about how it works, how it can be built and run.
+
+## 2. QT SETUP
+#### 2.1 Setup Kernel and SDK 
+	1. Download Yocto Project compatible with your board. 
+		In this example we use i.MX7D.
+	2. In order to enable sftp, add this: 
+		" CORE_IMAGE_EXTRA_INSTALL_append = " openssh-sftp openssh-sftp-server " " to local.conf 
+	2. Build a Yocto image that has QT packages. 
+		DISTRO=fsl-imx-x11 MACHINE=imx7dsabresd source fsl-setup-release.sh -b build-x11-7d
+		bitbake fsl-image-qt5
+	3. After Yocto build from step is finised, you need to build a SDK that will be used by 
+		the QT5 IDE from as cross toolchain for your board.
+	   Add the following line "inherit populate_sdk_qt5" to the end of this file: 
+		fsl-release-bsp/sources/meta-fsl-bsp-release/imx/meta-sdk/recipes-fsl/images/fsl-image-qt5.bb
+	   After that, run this:
+		bitbake fsl-image-qt5 -c populate_sdk
+	4. Go to your build folder and run this .sh: 
+		./tmp/deploy/sdk/fsl-imx-x11-glibc-x86_64-fsl-image-qt5-cortexa7hf-neon-toolchain-4.9.11-1.0.0.sh
+		in order to install the SDK.
+		
+#### 2.2 Setup QT IDE 
+	1. Download the Open Source version QT5 IDE from https://www.qt.io/download  
+	2. Run the .run file and choose the default setting and environment.
+		chmod +x qt-unified-linux-x64-3.0.2-online.run
+		./qt-unified-linux-x64-3.0.2-online.run
+	3. Run the MaintenanceTool from the installation folder. Choose to install the version that
+		is compatible with Yocto build.
+	   Compatible version can be found in fsl-release-bsp/sources/meta-qt5/recipes-qt/qt5/qt5-git.inc
+	   Version is QT_MODULE_BRANCH.
+		./MaintenanceTool
+
+#### 2.3 IDE settings
+	1. Tools -> Options -> Devices -> ADD Generic 
+	2. Tools -> Options -> Build&Run -> Compilers -> GCC -> Select the one from SDK folder from 
+		./sysroots/x86_64-pokysdk-linux/usr/bin/arm-poky-linux/arm-poky-linux-gcc
+		Set ABI to arm-linux-generic-elf-32bit
+	3. Tools -> Options -> Build&Run -> Compilers -> G++ -> Select the one from SDK folder from 
+		./sysroots/x86_64-pokysdk-linux/usr/bin/arm-poky-linux/arm-poky-linux-g++
+		Set ABI to arm-linux-generic-elf-32bit
+	4. Tools -> Options -> Build&Run -> Debuggers -> GDB -> Select the one from SDK folder from 
+		./sysroots/x86_64-pokysdk-linux/usr/bin/arm-poky-linux/arm-poky-linux-gdb
+		Set ABI to arm-linux-generic-elf-32bit
+	5. Tools -> Options -> Build&Run -> Kit -> Select Device Type to Generic Linux Device and
+		chose the device set from (1) and gcc from (2) g++ from (3) gdb from (4)
+	 
+#### 2.4 Run settings
+	1. Go to IDE folder root 
+		cd ./Tools/QtCreator/bin
+		. /work/sdk_qt/environment-setup-cortexa7hf-neon-poky-linux-gnueabi 
+	2. Go to Projects, select the platform for Build&Run, select Run and add the following to
+		run environment: Display=:0
+	3. Build and Run
+
+## 3. BUILDING EXECUTABLES
+#### 3.1 Tampering application
+	1. Building tampering application in order to be used by QT GUI requires an environment 
+		variable("QT") to be setted up
+	   Example: make QT=y
+	
+#### 3.2 Zmk application
+	1. Building zmk application in order to be used by QT GUI requires an environment
+		variable("QT") to be setted up
+	   Example: make QT=y
+
+#### 3.3 Qt tampering application
+	1. Create a folder named /home/root/tamper and place your QT tampering GUI executable in it.
+		If you build this executable in that folder using QT Interface, its name should be TamperGUI
+	2. Create a folder named /home/root/engine/tampering and place your tampering executable 
+		built for QT GUI named as following:
+	   For i.MX7D: "tamp7"
+	   For i.MX6UL: "tamp6"
+	3. Create a folder named /home/root/engine/zmk and place your tampering executable build for
+		QT GUI named "zmk"
+	
+## 4. RUNNING
+	1. Running using a Linux host is done within the QT Interface as described in above in QT SETUP
+	2. Running using just the board is done by just executing the TamperGUI executable from /home/root/tamper
+
+[application note]:    https://www.nxp.com/docs/en/application-note/AN12210.pdf        "application note"
