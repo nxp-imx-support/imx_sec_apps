@@ -1,0 +1,47 @@
+# MDHA (Message digest hardware accelerator) demo application
+
+This repository contains code of an implementation MDHA generation taking advantage of CAAM
+hardware crypto engine acceleration.
+
+## 1. INTRODUCTON
+
+This application is a demo application that can calculate the SHA1 and MD5 message digest
+of a file using CAAM. The output of the application is in sync with "sha1sum" and "md5sum"
+from Linux utilities.
+
+## 2. SETUP
+#### 2.1 Patch the Kernel
+	Go to your linux-imx git directory and copy the patch 0001-added-sha1-and-md5-demo-example.patch there.
+	Apply the patch git apply 0001-added-sha1-and-md5-demo-example.patch.
+
+#### 2.2 Enable the kernel module
+	Append in drivers/crypto/caam/Kconfig
+
+	config CRYPTO_DEV_FSL_CAAM_MDHA
+    	boolean "CAAM MDHA"
+     	depends on CRYPTO_DEV_FSL_CAAM
+     	default n
+   		help
+	       	Enables MDHA via CAAM
+
+
+	Append in drivers/crypto/caam/Makefile
+
+	obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_MDHA) += mdha.o
+
+
+	Append in arch/arm64/configs/defconfig
+
+	CONFIG_CRYPTO_DEV_FSL_CAAM_MDHA=y
+
+
+	Verify the configuration using: bitbake -f -c menuconfig virtual/kernel
+
+#### 2.3 Usage
+	Choose a type of hash algorithm you want to use. [sha1/md5]
+	Choose or create a file for which you want to obtain a MDHA hash. File size should be maximum 5MB.
+	Run: ./mdha <algorithm> <file>
+
+#### 2.4 Usage example
+	sudo dd if=/dev/urandom of=test bs=1M count=5
+	./mdha sha1 test
