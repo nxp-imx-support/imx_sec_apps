@@ -1,0 +1,3043 @@
+From 8d17eb4e4d4b742d45612c64e7aeee954c31fd6e Mon Sep 17 00:00:00 2001
+From: Marouene Boubakri <marouene.boubakri@nxp.com>
+Date: Wed, 1 May 2019 22:27:13 +0200
+Subject: [PATCH 1/1] Enable CAAM black key, blob, mp and ocotp features
+
+---
+ core/arch/arm/plat-imx/conf.mk                     |   6 +
+ core/arch/arm/plat-imx/crypto_conf.mk              |  16 +-
+ core/arch/arm/plat-imx/imx_ocotp.c                 |  10 +-
+ core/arch/arm/plat-imx/pta/pta_bk_mx.c             | 219 ++++++++++++
+ core/arch/arm/plat-imx/pta/pta_blob_mx.c           | 222 +++++++++++++
+ core/arch/arm/plat-imx/pta/pta_ocotp_mx.c          | 146 ++++++++
+ core/arch/arm/plat-imx/pta/sub.mk                  |   4 +
+ core/arch/arm/plat-imx/registers/ocotp-regs.h      |   7 +-
+ core/arch/arm/plat-imx/sub.mk                      |   4 +-
+ core/drivers/caam/acipher/caam_rsa.c               |  18 +-
+ core/drivers/caam/caam_bk.c                        | 369 +++++++++++++++++++++
+ core/drivers/caam/caam_blob.c                      | 237 ++++++++++++-
+ core/drivers/caam/caam_ctrl.c                      |  12 +
+ core/drivers/caam/hal/common/hal_ctrl.c            | 160 ++++++++-
+ core/drivers/caam/hal/imx_6_7/hal_ctrl.c           | 138 --------
+ core/drivers/caam/hal/imx_8m/registers/ctrl_regs.h |   9 +
+ core/drivers/caam/include/caam_bk.h                |  20 ++
+ core/drivers/caam/include/caam_blob.h              |   9 -
+ core/drivers/caam/include/caam_io.h                |  55 +++
+ core/drivers/caam/include/desc_defines.h           |  27 +-
+ core/drivers/caam/include/desc_helper.h            |  34 +-
+ core/drivers/caam/sub.mk                           |   1 +
+ core/lib/libimxcrypt/crypto_api/bk/bk.c            | 206 ++++++++++++
+ core/lib/libimxcrypt/crypto_api/bk/sub.mk          |   1 +
+ core/lib/libimxcrypt/crypto_api/blob/blob.c        | 183 ++++++++++
+ core/lib/libimxcrypt/crypto_api/blob/sub.mk        |   1 +
+ .../crypto_api/include/crypto_extension.h          |  99 +++++-
+ .../libimxcrypt/crypto_api/include/libimxcrypt.h   |  60 +++-
+ .../crypto_api/include/libimxcrypt_acipher.h       |   4 +
+ .../crypto_api/include/libimxcrypt_bk.h            |  48 +++
+ .../crypto_api/include/libimxcrypt_blob.h          |  34 ++
+ core/lib/libimxcrypt/crypto_api/sub.mk             |   2 +
+ lib/libmbedtls/include/mbedtls_config_uta.h        |   2 +
+ lib/libutee/include/pta_bk.h                       |  53 +++
+ lib/libutee/include/pta_blob.h                     |  49 +++
+ lib/libutee/include/pta_ocotp.h                    |  26 ++
+ 36 files changed, 2312 insertions(+), 179 deletions(-)
+ create mode 100644 core/arch/arm/plat-imx/pta/pta_bk_mx.c
+ create mode 100644 core/arch/arm/plat-imx/pta/pta_blob_mx.c
+ create mode 100644 core/arch/arm/plat-imx/pta/pta_ocotp_mx.c
+ create mode 100644 core/arch/arm/plat-imx/pta/sub.mk
+ create mode 100644 core/drivers/caam/caam_bk.c
+ create mode 100644 core/drivers/caam/include/caam_bk.h
+ create mode 100644 core/drivers/caam/include/caam_io.h
+ create mode 100644 core/lib/libimxcrypt/crypto_api/bk/bk.c
+ create mode 100644 core/lib/libimxcrypt/crypto_api/bk/sub.mk
+ create mode 100644 core/lib/libimxcrypt/crypto_api/blob/blob.c
+ create mode 100644 core/lib/libimxcrypt/crypto_api/blob/sub.mk
+ create mode 100644 core/lib/libimxcrypt/crypto_api/include/libimxcrypt_bk.h
+ create mode 100644 core/lib/libimxcrypt/crypto_api/include/libimxcrypt_blob.h
+ create mode 100644 lib/libutee/include/pta_bk.h
+ create mode 100644 lib/libutee/include/pta_blob.h
+ create mode 100644 lib/libutee/include/pta_ocotp.h
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 7dd1d7e..ff97f4c 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -468,6 +468,12 @@ CFG_IMX_WDOG ?= y
+ $(call force,CFG_IMX_OCRAM,y)
+ endif
+
++# i.MX8MM specific config
++ifneq (,$(filter y, $(CFG_MX8MM)))
++#CFG_IMX_MP ?= y
++CFG_OCOTP_PTA = y
++endif
++
+ ifeq ($(CFG_IMX_CAAM),y)
+ # currently disable the use of CAAM in OP-TEE
+ CFG_IMXCRYPT ?= n
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index e8b5aba..864ed21 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -36,6 +36,10 @@ $(call force, CFG_CRYPTO_GCM_HW,n)
+ $(call force, CFG_CRYPTO_PKCS_HW,n)
+
+ $(call force, CFG_CRYPTO_BLOB_HW,y)
++$(call force, CFG_BLOB_PTA,y)
++
++$(call force, CFG_CRYPTO_BK_HW,y)
++$(call force, CFG_BK_PTA,y)
+
+ ifeq ($(filter y, $(CFG_MX6UL)$(CFG_MX7)$(CFG_MX8MM)$(CFG_MX8M)),y)
+ # Definition of the Asymmetric Cipher supported by HW
+@@ -48,13 +52,21 @@ endif
+ $(call force, CFG_CRYPTO_CMAC_HW,y)
+
+ #
++# Force CFG_IMX_MP to n for platform not supported it
++#
++ifneq ($(filter y, $(CFG_MX6UL)$(CFG_MX7)$(CFG_MX7ULP)$(CFG_MX8M)$(CFG_MX8MM)),y)
++$(call force, CFG_IMX_MP,n)
++else
++CFG_IMX_MP = y
++endif
++#
+ # Enable Manufacturing Protection if the platform support it
+ # CFG_CRYPTO_MP_HW enables the manufacturing protection functionnalities
+ # _CFG_CRYPTO_WITH_MP enables the generic crypto api
+ # CFG_MANUFACT_PROTEC_PTA enables the MP PTA
+ # CFG_MBEDTLS_MP enables the setting of the public key type
+ #
+-ifeq ($(filter y, $(CFG_MX6UL)$(CFG_MX7)), y)
++ifeq ($(CFG_IMX_MP),y)
+ CFG_CRYPTO_MP_HW ?= y
+ _CFG_CRYPTO_WITH_MP ?= y
+ CFG_MANUFACT_PROTEC_PTA ?= y
+@@ -88,4 +100,6 @@ $(call force, CFG_CRYPTO_AUTHENC_HW, $(call cryp-one-hw-enabled, CCM GCM))
+ $(call force, CFG_CRYPTO_PK_HW, $(call cryp-one-hw-enabled, RSA ECC DH DSA))
+
+ $(call force, _CFG_CRYPTO_WITH_HUK, $(call cryp-one-hw-enabled, BLOB))
++$(call force, _CFG_CRYPTO_WITH_BLOB, $(call cryp-one-hw-enabled, BLOB))
++$(call force, _CFG_CRYPTO_WITH_BK, $(call cryp-one-hw-enabled, BK))
+ endif
+diff --git a/core/arch/arm/plat-imx/imx_ocotp.c b/core/arch/arm/plat-imx/imx_ocotp.c
+index 68d4728..70c1763 100644
+--- a/core/arch/arm/plat-imx/imx_ocotp.c
++++ b/core/arch/arm/plat-imx/imx_ocotp.c
+@@ -16,7 +16,7 @@
+ /* Platform includes */
+ #include <imx.h>
+
+-static uint32_t die_id;
++static uint64_t die_id;
+
+ /**
+  * @brief   Read device Die Id
+@@ -34,12 +34,16 @@ int tee_otp_get_die_id(uint8_t *buffer, size_t len)
+ 		va = core_mmu_get_va(OCOTP_BASE, MEM_AREA_IO_SEC);
+
+ 		/* Read Fuse shadow register containing the chip DIE ID */
+-		die_id = read32(va + OCOTP_DIE_ID);
++		die_id = read32(va + OCOTP_UID_HIGH);
++
++		die_id <<= 32;
++		die_id |=  read32(va + OCOTP_UID_LOW);
++
+ #ifdef CFG_MX7ULP
+ 		/* Read and add part of the Wafer and Lot Number */
+ 		die_id |= (read32(va + OCOTP_WAFER_NO) << 16);
+ #endif
+-		IMSG("Device Die ID = 0x%"PRIx32"", die_id);
++		IMSG("Device Die ID = 0x%"PRIx64"", die_id);
+ 		if (die_id == 0) {
+ 			if (imx_is_device_closed()) {
+ 				IMSG("Bad Device ID - Stop");
+diff --git a/core/arch/arm/plat-imx/pta/pta_bk_mx.c b/core/arch/arm/plat-imx/pta/pta_bk_mx.c
+new file mode 100644
+index 0000000..0acabd3
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_bk_mx.c
+@@ -0,0 +1,219 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_bk_mx.c
++ *
++ * @brief   Pseudo Trusted Application.\n
++ *			Key Encapsulation functionality
++ */
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_bk.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <crypto_extension.h>
++#include <libimxcrypt_bk.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/** @brief    PTA name */
++#define BK_PTA_NAME "bk.pta"
++
++/**
++ * @brief   Call the Cryptographic Extension API to encapsulate
++ *          a plain key into a black key.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = Cryptographic Algorithm Id
++ *     params[0].value.b = Black key type (enum PTA_BK_TYPE)
++ *     params[1].memref  = Key to encapsulate
++ *     params[2].memref  = Output black key
++ *
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result encapsulate(uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS]) {
++	TEE_Result res = TEE_ERROR_GENERIC;
++	uint32_t exp_param_types;
++	struct imxcrypt_buf pk = {0};
++	struct imxcrypt_buf bk = {0};
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++			TEE_PARAM_TYPE_MEMREF_INPUT,
++			TEE_PARAM_TYPE_MEMREF_OUTPUT,
++			TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* Convert the plain key to imxcrypt_buf object */
++	pk.data = params[1].memref.buffer;
++	pk.length = params[1].memref.size;
++
++	/* Convert the black key to imxcrypt_buf object */
++	bk.data = params[2].memref.buffer;
++	bk.length = params[2].memref.size;
++
++	res = bk_encapsulate(params[0].value.a, params[0].value.b, &pk, &bk);
++
++	if (res == TEE_SUCCESS)
++		params[2].memref.size = bk.length;
++
++	return res;
++}
++
++/**
++ * @brief   Call the Cryptographic Extension API to sign
++ *          data using a black key.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = Cryptographic Algorithm
++ *     params[0].value.b = Black key type (enum PTA_BK_TYPE)
++ *     params[1].memref  = Black key bytes
++ *     params[2].memref  = Input data
++ *     params[3].memref  = Output data
++ *
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result sign(uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS]) {
++	TEE_Result res = TEE_ERROR_GENERIC;
++	uint32_t exp_param_types;
++
++	struct imxcrypt_buf src = {0};
++	struct imxcrypt_buf dst = {0};
++	struct imxcrypt_buf key[PTA_BK_MAX_KEYS] = {0};
++	struct pta_bk_buf *pta_key = NULL;
++	size_t ki;
++	size_t key_sz;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++			TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_MEMREF_INPUT,
++			TEE_PARAM_TYPE_MEMREF_INOUT);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	pta_key = (struct pta_bk_buf *)params[1].memref.buffer;
++	key_sz = (params[1].memref.size) / sizeof(struct pta_bk_buf);
++
++	/* Convert the keys buffer to imxcrypt_buf object */
++	for(ki = 0; ki < key_sz; ki++){
++		key[ki].data = pta_key->data;
++		key[ki].length = pta_key->length;
++		pta_key += 1;
++	}
++
++	/* Convert the data buffer to imxcrypt_buf object */
++	src.data = params[2].memref.buffer;
++	src.length = params[2].memref.size;
++
++	/* Convert the signature buffer to imxcrypt_buf object */
++	dst.data = params[3].memref.buffer;
++	dst.length = params[3].memref.size;
++
++	res = bk_sign(params[0].value.a, params[0].value.b, &key, key_sz, &src, &dst);
++
++	if (res == TEE_SUCCESS)
++		params[3].memref.size = dst.length;
++
++	return res;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++		uint32_t cmd_id, uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS])
++{
++	switch (cmd_id) {
++		case PTA_BK_CMD_ENCAPS:
++		return encapsulate(param_types, params);
++		case PTA_BK_CMD_SIGN:
++		return sign(param_types, params);
++		default:
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++}
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++		TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++		void **sess_ctx)
++{
++	struct tee_ta_session *sess;
++
++	/* Check if the session is opened by a TA */
++	sess = tee_ta_get_calling_session();
++	if (!sess)
++	return TEE_ERROR_ACCESS_DENIED;
++
++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++	return TEE_SUCCESS;
++}
++
++pseudo_ta_register(
++		.uuid = PTA_BK_PTA_UUID,
++		.name = BK_PTA_NAME,
++		.flags = PTA_DEFAULT_FLAGS,
++		.open_session_entry_point = open_session,
++		.invoke_command_entry_point = invokeCommandEntryPoint);
+\ No newline at end of file
+diff --git a/core/arch/arm/plat-imx/pta/pta_blob_mx.c b/core/arch/arm/plat-imx/pta/pta_blob_mx.c
+new file mode 100644
+index 0000000..b154adf
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_blob_mx.c
+@@ -0,0 +1,222 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_blob_mx.c
++ *
++ * @brief   Pseudo Trusted Application.\n
++ *			Blob Encapsulation/Decapsulation functionality
++ */
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_blob.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <crypto_extension.h>
++#include <libimxcrypt_blob.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/** @brief    PTA name */
++#define BLOB_PTA_NAME "blob.pta"
++
++/**
++ * @brief   Call the Crytographic Extension API to encapsulate
++ *          the given input data in the requested blob type.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = blob Type (enum PTA_BLOB_TYPE)
++ *     params[1].memref  = Key derivation of 128 bits length
++ *     params[2].memref  = Data to encapsulate
++ *
++ *    Output:
++ *     params[3].memref  = Blob resulting
++ *                         (size >= data length + 48 bytes)
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result encapsulate(uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS])
++{
++	TEE_Result res = TEE_ERROR_GENERIC;
++	uint32_t exp_param_types;
++	struct imxcrypt_buf payload;
++	struct imxcrypt_buf blob;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_MEMREF_INPUT,
++					TEE_PARAM_TYPE_MEMREF_INPUT,
++					TEE_PARAM_TYPE_MEMREF_OUTPUT);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* Check the Key derivation */
++	if (params[1].memref.size != BLOB_KEY_MODIFIER_SIZE)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* Convert the payload to imxcrypt_buf object */
++	payload.data   = params[2].memref.buffer;
++	payload.length = params[2].memref.size;
++
++	/* Convert the blob to imxcrypt_buf object */
++	blob.data   = params[3].memref.buffer;
++	blob.length = params[3].memref.size;
++
++	res = blob_encapsulate(params[0].value.a,
++			params[1].memref.buffer,
++			&payload, &blob);
++
++	if (res == TEE_SUCCESS)
++		params[3].memref.size = blob.length;
++
++	return res;
++}
++
++/**
++ * @brief   Call the Crytographic Extension API to decapsulate
++ *          the given input blob in the requested blob type.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = blob Type (enum PTA_BLOB_TYPE)
++ *     params[1].memref  = Key derivation of 128 bits length
++ *     params[2].memref  = Blob to decapsulate
++ *
++ *    Output:
++ *     params[3].memref  = Data resulting
++ *                         (size >= blob length - 48 bytes)
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result decapsulate(uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS])
++{
++	TEE_Result res = TEE_ERROR_GENERIC;
++	uint32_t exp_param_types;
++	struct imxcrypt_buf payload;
++	struct imxcrypt_buf blob;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_MEMREF_INPUT,
++					TEE_PARAM_TYPE_MEMREF_INPUT,
++					TEE_PARAM_TYPE_MEMREF_OUTPUT);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* Check the Key derivation */
++	if (params[1].memref.size != BLOB_KEY_MODIFIER_SIZE)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* Convert the payload to imxcrypt_buf object */
++	payload.data   = params[3].memref.buffer;
++	payload.length = params[3].memref.size;
++
++	/* Convert the blob to imxcrypt_buf object */
++	blob.data   = params[2].memref.buffer;
++	blob.length = params[2].memref.size;
++
++	res = blob_decapsulate(params[0].value.a,
++			params[1].memref.buffer,
++			&payload, &blob);
++
++	if (res == TEE_SUCCESS)
++		params[3].memref.size = payload.length;
++
++	return res;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++		uint32_t cmd_id, uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS])
++{
++	switch (cmd_id) {
++	case PTA_BLOB_CMD_ENCAPS:
++		return encapsulate(param_types, params);
++	case PTA_BLOB_CMD_DECAPS:
++		return decapsulate(param_types, params);
++	default:
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++}
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++			TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++			void **sess_ctx)
++{
++	struct tee_ta_session *sess;
++
++	/* Check if the session is opened by a TA */
++	sess = tee_ta_get_calling_session();
++	if (!sess)
++		return TEE_ERROR_ACCESS_DENIED;
++
++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++	return TEE_SUCCESS;
++}
++
++pseudo_ta_register(
++		.uuid = PTA_BLOB_PTA_UUID,
++		.name = BLOB_PTA_NAME,
++		.flags = PTA_DEFAULT_FLAGS,
++		.open_session_entry_point = open_session,
++		.invoke_command_entry_point = invokeCommandEntryPoint);
+\ No newline at end of file
+diff --git a/core/arch/arm/plat-imx/pta/pta_ocotp_mx.c b/core/arch/arm/plat-imx/pta/pta_ocotp_mx.c
+new file mode 100644
+index 0000000..f132812
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_ocotp_mx.c
+@@ -0,0 +1,146 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_ocotp_mx.c
++ *
++ * @brief   Pseudo Trusted Application.\n
++ *			OCOTP functionality
++ */
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++#include <kernel/tee_common_otp.h>
++
++/* Library libutee includes */
++#include <pta_ocotp.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/** @brief    PTA name */
++#define OCOTP_PTA_NAME "ocotp.pta"
++
++/**
++ * @brief   Call the Cryptographic Extension API to encapsulate
++ *          a plain key into a black key.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = Cryptographic Algorithm Id
++ *     params[0].value.b = Black key type (enum PTA_BK_TYPE)
++ *     params[1].memref  = Key to encapsulate
++ *     params[2].memref  = Output black key
++ *
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result chip_uid(uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS]) {
++
++	uint32_t exp_param_types;
++	uint64_t die_id = 0, i, u;
++	uint8_t pdie_id[sizeof(uint64_t)] = {0};
++	uint8_t *odie_id = NULL;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_OUTPUT,
++			TEE_PARAM_TYPE_NONE,
++			TEE_PARAM_TYPE_NONE,
++			TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* Get Chip Id */
++	if (tee_otp_get_die_id(&die_id, sizeof(die_id)))
++		return TEE_ERROR_GENERIC;
++
++	for (i = 0; i < sizeof(uint64_t); i++) {
++		u = die_id;
++		u = u >> (8 * i);
++		pdie_id[i] = (uint8_t)(u & 0xff);
++	}
++	/* Chip Uid is 8 bytes long, pad it to requested Chip id length */
++	odie_id = params[0].memref.buffer;
++
++	for (i = 0; i < params[0].memref.size; i++)
++		odie_id[i % sizeof(uint64_t)] = pdie_id[i];
++
++	return TEE_SUCCESS;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++		uint32_t cmd_id, uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS])
++{
++	switch (cmd_id) {
++		case PTA_OCOTP_CMD_CHIP_UID:
++		return chip_uid(param_types, params);
++		default:
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++}
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++		TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++		void **sess_ctx)
++{
++	struct tee_ta_session *sess;
++
++	/* Check if the session is opened by a TA */
++	sess = tee_ta_get_calling_session();
++	if (!sess)
++	return TEE_ERROR_ACCESS_DENIED;
++
++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++	return TEE_SUCCESS;
++}
++
++pseudo_ta_register(
++		.uuid = PTA_OCOTP_PTA_UUID,
++		.name = OCOTP_PTA_NAME,
++		.flags = PTA_DEFAULT_FLAGS,
++		.open_session_entry_point = open_session,
++		.invoke_command_entry_point = invokeCommandEntryPoint);
+\ No newline at end of file
+diff --git a/core/arch/arm/plat-imx/pta/sub.mk b/core/arch/arm/plat-imx/pta/sub.mk
+new file mode 100644
+index 0000000..fc415a2
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/sub.mk
+@@ -0,0 +1,4 @@
++srcs-$(CFG_MANUFACT_PROTEC_PTA) += pta_manufact_protec_mx.c
++srcs-$(CFG_BLOB_PTA) += pta_blob_mx.c
++srcs-$(CFG_BK_PTA) += pta_bk_mx.c
++srcs-$(CFG_OCOTP_PTA) += pta_ocotp_mx.c
+\ No newline at end of file
+diff --git a/core/arch/arm/plat-imx/registers/ocotp-regs.h b/core/arch/arm/plat-imx/registers/ocotp-regs.h
+index f2e03f4..a260c93 100644
+--- a/core/arch/arm/plat-imx/registers/ocotp-regs.h
++++ b/core/arch/arm/plat-imx/registers/ocotp-regs.h
+@@ -7,10 +7,11 @@
+ #define __OCOTP_REGS_H__
+
+ #ifdef CFG_MX7ULP
+-#define OCOTP_WAFER_NO	0x04D0
+-#define OCOTP_DIE_ID	0x04E0
++#define OCOTP_WAFER_NO	0x4D0
++#define OCOTP_UID_HIGH	0x4E0
+ #else
+-#define OCOTP_DIE_ID	0x0420
++#define OCOTP_UID_HIGH  0x420
++#define OCOTP_UID_LOW	0x410
+ #endif
+
+ #endif /* __OCOTP_REGS_H__ */
+diff --git a/core/arch/arm/plat-imx/sub.mk b/core/arch/arm/plat-imx/sub.mk
+index 8652890..ad1a935 100644
+--- a/core/arch/arm/plat-imx/sub.mk
++++ b/core/arch/arm/plat-imx/sub.mk
+@@ -29,9 +29,11 @@ srcs-$(CFG_DT) += imx_dt.c
+ srcs-$(CFG_CSU) += imx_csu.c
+ srcs-$(CFG_SCU) += imx_scu.c
+ srcs-$(CFG_IMX_OCRAM) += imx_ocram.c
+-srcs-$(CFG_MANUFACT_PROTEC_PTA) += pta/pta_manufact_protec_mx.c
+ srcs-$(CFG_XRDC) += xrdc.c
+ subdirs-$(CFG_PSCI_ARM32) += pm
+
+ # Build the busfreq module
+ subdirs-$(CFG_BUSFREQ) += busfreq
++
++# Build the imx-PTA
++subdirs-y += pta
+diff --git a/core/drivers/caam/acipher/caam_rsa.c b/core/drivers/caam/acipher/caam_rsa.c
+index 204ae6e..9bac2a9 100644
+--- a/core/drivers/caam/acipher/caam_rsa.c
++++ b/core/drivers/caam/acipher/caam_rsa.c
+@@ -33,7 +33,7 @@
+ /*
+  * Debug Macros
+  */
+-//#define RSA_DEBUG
++#define RSA_DEBUG
+ #ifdef RSA_DEBUG
+ //#define DUMP_DESC
+ //#define DUMP_BUF
+@@ -75,7 +75,7 @@
+  *           Format #2: (p, q, d)
+  *           Format #3: (p, q, dp, dq, qp)
+  */
+-#define RSA_PRIVATE_KEY_FORMAT  3
++#define RSA_PRIVATE_KEY_FORMAT  1
+
+ static TEE_Result do_caam_encrypt(struct imxcrypt_rsa_ed *rsa_data,
+ 				descEntry_t operation);
+@@ -1471,8 +1471,18 @@ static TEE_Result do_caam_decrypt(struct imxcrypt_rsa_ed *rsa_data,
+ 		goto exit_decrypt;
+ 	}
+
+-	/* Set the Decryption operation type */
+-	desc[desclen++] = operation | PROT_RSA_DEC_KEYFORM(key.format);
++	/* Set the Decryption operation type */
++	desc[desclen] = operation | PROT_RSA_DEC_KEYFORM(key.format);
++
++#ifdef _CFG_CRYPTO_WITH_BK
++	if (rsa_data->key.is_black == true){
++		desc[desclen] |= PROT_RSA_KEY_TYPE(ENC);
++		if (rsa_data->key.bk_type == BK_CCM) {
++			desc[desclen] |= PROT_RSA_KEY_TYPE(EKT);
++		}
++	}
++#endif
++	desclen++;
+
+ 	if (operation == RSA_DECRYPT(PKCS_V1_5)) {
+ 		/* Get the PPKCS1 v1.5 Message length generated */
+diff --git a/core/drivers/caam/caam_bk.c b/core/drivers/caam/caam_bk.c
+new file mode 100644
+index 0000000..b364f29
+--- /dev/null
++++ b/core/drivers/caam/caam_bk.c
+@@ -0,0 +1,369 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    caam_bk.c
++ *
++ * @brief   CAAM Black key manager.\n
++ *          Implementation of Black key functions
++ */
++/* Standard includes */
++#include <string.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/* Global includes */
++#include <mm/core_memprot.h>
++#include <tee/cache.h>
++#include <utee_defines.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Platform includes */
++#include <imx.h>
++
++/* Library i.MX includes */
++#include <libimxcrypt.h>
++#include <libimxcrypt_bk.h>
++#include <libimxcrypt_acipher.h>
++
++/* Local includes */
++#include "common.h"
++#include "caam_bk.h"
++#include "caam_jr.h"
++
++/* Utils includes */
++#include "utils_mem.h"
++
++/*
++ * Debug Macros
++ */
++#ifdef BK_DEBUG
++#define BK_TRACE		DRV_TRACE
++#else
++#define BK_TRACE(...)
++#endif
++
++#ifdef DUMP_DESC
++#define BK_DUMPDESC(desc)	{BK_TRACE("BK Descriptor"); \
++							DRV_DUMPDESC(desc); }
++#else
++#define BK_DUMPDESC(desc)
++#endif
++
++#ifdef DUMP_BUF
++#define BK_DUMPBUF	DRV_DUMPBUF
++#else
++#define BK_DUMPBUF(...)
++#endif
++
++#define BK_OPERATE_DESC_ENTRIES	5
++
++/**
++ * @brief
++ * Build RSA private key encapsulation job descriptor.
++ *
++ * Load key to class 1 key register.
++ * The PKHA E Size Register is automatically written by the KEY Command.
++ * Write back out via FIFO store.
++ *
++ * @param[in/out] desc Pointer to job descriptor buffer
++ * @param[in] type     Encapsulation type
++ * @param[in] pk_ptr   Physical address of plain key
++ * @param[in] pk_size  Plain key size
++ * @param[in] bk_ptr   Physical address of black key
++ *
++ * @retval desclen     Length of the constructed job descriptor
++ */
++static uint8_t build_rsa_encap_jobdesc(descPointer_t desc, enum bk_type type,
++		paddr_t pk_ptr, size_t pk_size, paddr_t bk_ptr) {
++
++	uint8_t desclen = 1;
++	desc[desclen++] = (CMD_KEY_TYPE | CMD_CLASS(CLASS_1) | KEY_DEST(PKHA_E)
++			| KEY_LENGTH(pk_size));
++	desc[desclen++] = pk_ptr;
++
++	/* ...and write back out via FIFO store */
++	desc[desclen] = (type == BK_CCM) ? FIFO_STORE_OUTPUT(PKHA_E_AES_CCM_JKEK)
++			: FIFO_STORE_OUTPUT(PKHA_E_AES_ECB_JKEK);
++	desc[desclen++] |= CMD_FIFO_STORE_TYPE | CMD_CLASS(CLASS_1)
++			| FIFO_STORE_LENGTH(pk_size);
++	desc[desclen++] = bk_ptr;
++
++	/* finish off the job header */
++	desc[0] = DESC_HEADER_IDX(desclen, 0);
++
++	return desclen;
++}
++
++/**
++ * @brief   CAAM driver does not implement free_keypair function.
++ *			Manually free key.
++ *
++ * @param[in]  key    key-pair structure to free
++ *
++ */
++static void free_rsa_key(struct rsa_keypair *key)
++{
++	if (key) {
++		crypto_bignum_free(key->e);
++		crypto_bignum_free(key->d);
++		crypto_bignum_free(key->n);
++		crypto_bignum_free(key->p);
++		crypto_bignum_free(key->q);
++		crypto_bignum_free(key->dp);
++		crypto_bignum_free(key->dq);
++		crypto_bignum_free(key->qp);
++		free(key);
++	}
++}
++
++/**
++ * @brief
++ * Encapsulates input plain key to black a key.
++ *
++ * When using AES-ECB encryption, data is a multiple of 16 bytes long.
++ * If the Private exponent is a multiple of 128-bit, then the AES-ECB encrypted key
++ * would fit in the same buffer as the original plain key.
++ * So if the plain key is not a multiple of 16 bytes long, then it is padded before being encrypted.
++ * A CCM-encrypted black key is always at least 12 bytes longer than the encapsulated key.
++ *
++ * @param[in/out] bk_key    Black key data to encapsulate
++ *
++ * @retval TEE_SUCCESS               Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY   Not enough memory
++ * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
++ * @retval TEE_ERROR_GENERIC         Any other error
++ */
++static TEE_Result do_encapsulate(struct imxcrypt_bk_key *bk_key) {
++	TEE_Result ret = TEE_ERROR_GENERIC;
++	size_t bk_size, pk_size;
++	enum CAAM_Status retstatus = CAAM_FAILURE;
++	paddr_t paddr_input = 0;
++
++	struct jr_jobctx jobctx = { 0 };
++	descPointer_t desc = 0;
++	uint8_t desclen = 1;
++	int retS = 0;
++
++	struct caambuf out_buf = { 0 };
++
++	/* Check input parameters */
++	if (!bk_key){
++		BK_TRACE("Input is NULL");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Allocate the job used to prepare the operation */
++	desc = caam_alloc_desc(BK_OPERATE_DESC_ENTRIES);
++	if (!desc) {
++		BK_TRACE("Could not allocate memory for descriptor");
++		return TEE_ERROR_OUT_OF_MEMORY;
++	}
++
++	/* Key size */
++	pk_size = bk_key->pk.length;
++
++	/* Compute output black key size */
++	bk_size = (bk_key->type == BK_CCM) ? CCM_BLACK_KEY_SIZE(pk_size)
++			: ECB_BLACK_KEY_SIZE(pk_size);
++
++	paddr_input = virt_to_phys(bk_key->pk.data);
++	if (!paddr_input) {
++		BK_TRACE("Error getting physical address of plain key");
++		goto exit_operate;
++	}
++
++	retS = caam_realloc_align(bk_key->bk.data, &out_buf, bk_size);
++	if (retS == (-1)) {
++		BK_TRACE("Signature reallocation error");
++		ret = TEE_ERROR_OUT_OF_MEMORY;
++		goto exit_operate;
++	}
++
++	BK_DUMPBUF("Input",
++			bk_key->pk.data, bk_key->pk.length);
++
++	switch (bk_key->alg) {
++
++	case CRYPTO_RSA:
++		desclen = build_rsa_encap_jobdesc(desc, bk_key->type, paddr_input,
++				pk_size, out_buf.paddr);
++		break;
++	default:
++		BK_TRACE("Algo not supported CAAM BK");
++		ret = TEE_ERROR_NOT_SUPPORTED;
++		goto exit_operate;
++	}
++
++	jobctx.desc = desc;
++	BK_DUMPDESC(desc);
++
++	cache_operation(TEE_CACHECLEAN, bk_key->pk.data, pk_size);
++	cache_operation(TEE_CACHEFLUSH, out_buf.data, out_buf.length);
++
++	/* Enqueue the job descriptor */
++	retstatus = caam_jr_enqueue(&jobctx, NULL);
++
++	if (retstatus == CAAM_NO_ERROR) {
++		cache_operation(TEE_CACHEINVALIDATE, out_buf.data, out_buf.length);
++		BK_TRACE("Done CAAM BK");
++		BK_DUMPBUF("Output", out_buf.data, bk_size);
++		/*
++		 * Copy the result data in the correct output
++		 * buffer function of the operation direction
++		 */
++		memcpy(bk_key->bk.data, out_buf.data, bk_size);
++		ret = TEE_SUCCESS;
++		bk_key->bk.length = bk_size;
++	} else {
++		BK_TRACE("CAAM Status 0x%08"PRIx32"", jobctx.status);
++		ret = TEE_ERROR_GENERIC;
++		goto exit_operate;
++	}
++
++	exit_operate: if (retS == 1)
++		caam_free_buf(&out_buf);
++
++	caam_free_desc(&desc);
++	return ret;
++}
++
++/**
++ * @brief
++ * RSA Sign data using a black key.
++ *
++ * @param[in/out] bk_data    Data to decrypt using black key
++ *
++ * @retval TEE_SUCCESS               Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY   Not enough memory
++ * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
++ * @retval TEE_ERROR_GENERIC         Any other error
++ */
++static TEE_Result do_rsa_sign(struct imxcrypt_bk_data *bk_data){
++
++	TEE_Result res = TEE_ERROR_GENERIC;
++
++	struct imxcrypt_rsa *rsa = NULL;
++	struct rsa_keypair *key = NULL;
++	struct imxcrypt_rsa_ed rsa_data = {0};
++
++	/* Check if RSA is available */
++	rsa = imxcrypt_getmod(CRYPTO_RSA);
++	if (!rsa) {
++		BK_TRACE("CAAM RSA not implemented or not enabled");
++		res = TEE_ERROR_NOT_IMPLEMENTED;
++		goto out;
++	}
++
++	/* Check input key */
++	if( bk_data->key_sz < 2) {
++		BK_TRACE("Invalid RSA key");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	/* Allocate Key */
++	key = malloc(sizeof(struct rsa_keypair));
++	if (!key) {
++		BK_TRACE("Error allocating RSA keypair");
++		res = TEE_ERROR_OUT_OF_MEMORY;
++		goto out;
++	}
++
++	/* Allocate RSA Key pair */
++	res = rsa->alloc_keypair(key, bk_data->key[1].length * 8);
++	if (res != TEE_SUCCESS) {
++		BK_TRACE("Error allocating RSA keypair");
++		res = TEE_ERROR_OUT_OF_MEMORY;
++		goto out;
++	}
++
++	/* Set private exponent */
++	if(crypto_bignum_bin2bn(bk_data->key[0].data, bk_data->key[0].length, key->d) != TEE_SUCCESS){
++		BK_TRACE("Error setting private exponent");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	/* Set public modulus */
++	if(crypto_bignum_bin2bn(bk_data->key[1].data, bk_data->key[1].length, key->n) != TEE_SUCCESS){
++		BK_TRACE("Error setting public modulus");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	/* Setup RSA parameters */
++	rsa_data.key.key = key;
++	rsa_data.key.isprivate = true;
++	rsa_data.key.n_size = bk_data->key[1].length;
++	rsa_data.key.is_black = true;
++	rsa_data.key.bk_type = bk_data->type;
++	rsa_data.rsa_id = RSA_SIGN;
++	rsa_data.message.data = bk_data->dst.data;
++	rsa_data.message.length = bk_data->dst.length;
++	rsa_data.cipher.data = bk_data->src.data;
++	rsa_data.cipher.length = bk_data->src.length;
++
++	/* RSA private decrypt (sign) */
++	res = rsa->decrypt(&rsa_data);
++	if (res != TEE_SUCCESS) {
++		BK_TRACE("Signing error using HW");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	/* Update the out signature size */
++	bk_data->dst.length = rsa_data.cipher.length;
++
++out: free_rsa_key(key);
++	return res;
++}
++
++/**
++ * @brief
++ * Sign data using a black key.
++ *
++ * @param[in/out] bk_data    Data to decrypt using black key
++ *
++ * @retval TEE_SUCCESS               Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY   Not enough memory
++ * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
++ * @retval TEE_ERROR_GENERIC         Any other error
++ */
++static TEE_Result do_sign(struct imxcrypt_bk_data *bk_data){
++
++	/* Check if the algorithm with black key is supported */
++	if(bk_data->alg == CRYPTO_RSA){
++		return do_rsa_sign(bk_data);
++	} else {
++		BK_TRACE("Algorithm with black key not supported ");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++}
++/**
++ * @brief   Registration of the Black key Driver
++ */
++struct imxcrypt_bk driver_bk = { .encapsulate = &do_encapsulate, .sign = &do_sign};
++
++/**
++ * @brief   Initialize the Black key module
++ *
++ * @param[in] ctrl_addr   Controller base address
++ *
++ * @retval  CAAM_NO_ERROR    Success
++ * @retval  CAAM_FAILURE     An error occurred
++ */
++enum CAAM_Status caam_bk_init(vaddr_t ctrl_addr __unused)
++{
++	enum CAAM_Status retstatus = CAAM_FAILURE;
++
++	/* Register the BK Driver */
++	if (imxcrypt_register(CRYPTO_BK, &driver_bk) == 0) {
++		retstatus = CAAM_NO_ERROR;
++	}
++
++	return retstatus;
++}
+\ No newline at end of file
+diff --git a/core/drivers/caam/caam_blob.c b/core/drivers/caam/caam_blob.c
+index 2b99307..52f4c03 100644
+--- a/core/drivers/caam/caam_blob.c
++++ b/core/drivers/caam/caam_blob.c
+@@ -21,6 +21,7 @@
+ /* Library i.MX includes */
+ #include <libimxcrypt.h>
+ #include <libimxcrypt_huk.h>
++#include <libimxcrypt_blob.h>
+
+ /* Local includes */
+ #include "common.h"
+@@ -35,8 +36,8 @@
+  */
+ //#define BLOB_DEBUG
+ #ifdef BLOB_DEBUG
+-#define DUMP_DESC
+-#define DUMP_BUF
++//#define DUMP_DESC
++//#define DUMP_BUF
+ #define BLOB_TRACE		DRV_TRACE
+ #else
+ #define BLOB_TRACE(...)
+@@ -168,6 +169,230 @@ struct imxcrypt_huk driver_huk = {
+ };
+
+ /**
++ * @brief
++ *   - Encapsulates input data to RED or BLACK blob.\n
++ *   - Decapsulates the input blob to provide the encapsulated data.\n
++ *   \n
++ *   If resulting blob is black, the data must be black as well.\n
++ *   If resulting blob is red, the data are plain text.\n
++ *   \n
++ *   Output data length is:\n
++ *      - encapsulation = inLen + BLOB_BPAD_SIZE\n
++ *      - decapsulation = inLen - BLOB_BPAD_SIZE\n
++ *   \n
++ * @param[in/out] blob_data    Blob data to encapsulate/decapsulate
++ *
++ * @retval TEE_SUCCESS               Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY   Not enough memory
++ * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
++ * @retval TEE_ERROR_GENERIC         Any other error
++ */
++static TEE_Result do_operate(struct imxcrypt_blob_data *blob_data)
++{
++#define BLOB_OPERATE_DESC_ENTRIES	9
++
++	TEE_Result ret = TEE_ERROR_GENERIC;
++	enum CAAM_Status retstatus = CAAM_FAILURE;
++
++	struct jr_jobctx jobctx = {0};
++	descPointer_t desc = NULL;
++
++	paddr_t paddr_input = 0;
++	paddr_t paddr_key = 0;
++
++	struct caambuf out_buf = {0};
++	size_t insize, rinsize;
++	size_t outsize, routsize;
++
++	uint32_t opflag   = 0;
++	int retS = 0;
++	uint8_t desclen = 1;
++
++	BLOB_TRACE("Blob %s - Type %d - Payload %d bytes - Blob %d bytes",
++			(blob_data->encaps) ? "Encaps" : "Decaps",
++			blob_data->type,
++			blob_data->payload.length,
++			blob_data->blob.length);
++
++	paddr_key = virt_to_phys(blob_data->key.data);
++	if (!paddr_key)
++		goto exit_operate;
++
++	if (blob_data->encaps) {
++		retS = caam_realloc_align(blob_data->blob.data, &out_buf,
++				blob_data->blob.length);
++		if (retS == (-1)) {
++			BLOB_TRACE("Signature reallocation error");
++			ret = TEE_ERROR_OUT_OF_MEMORY;
++			goto exit_operate;
++		}
++
++		insize  = blob_data->payload.length;
++		outsize = blob_data->blob.length;
++
++		paddr_input = virt_to_phys(blob_data->payload.data);
++		if (!paddr_input)
++			goto exit_operate;
++
++		BLOB_DUMPBUF("Input",
++			blob_data->payload.data, blob_data->payload.length);
++	} else {
++		retS = caam_realloc_align(blob_data->payload.data, &out_buf,
++		blob_data->payload.length);
++		if (retS == (-1)) {
++			BLOB_TRACE("Signature reallocation error");
++			ret = TEE_ERROR_OUT_OF_MEMORY;
++			goto exit_operate;
++		}
++		insize  = blob_data->blob.length;
++		outsize = blob_data->payload.length;
++
++		paddr_input = virt_to_phys(blob_data->blob.data);
++		if (!paddr_input)
++			goto exit_operate;
++
++		BLOB_DUMPBUF("Input",
++			blob_data->blob.data, blob_data->blob.length);
++	}
++
++	rinsize  = insize;
++	routsize = outsize;
++
++	switch (blob_data->type) {
++	case BLACK_CCM:
++		opflag = PROT_BLOB_TYPE(BLACK_KEY) | PROT_BLOB_INFO(CCM);
++		/*
++		 * Round up the size of buffer to clean/flush real buffer
++		 * which contains more data
++		 */
++		if (blob_data->encaps)
++			rinsize = BLACK_KEY_CCM_SIZE(insize);
++		else
++			routsize = ROUNDUP(BLACK_KEY_CCM_SIZE(outsize), 16);
++		break;
++
++	case BLACK_ECB:
++		opflag = PROT_BLOB_TYPE(BLACK_KEY) | PROT_BLOB_INFO(ECB);
++		/*
++		 * Round up the size of buffer to clean/flush real buffer
++		 * which contains more data
++		 */
++		if (blob_data->encaps)
++			rinsize = BLACK_KEY_CCM_SIZE(insize);
++		else
++			routsize = ROUNDUP(BLACK_KEY_ECB_SIZE(outsize), 16);
++		break;
++
++	case RED:
++		break;
++
++	default:
++		ret = TEE_ERROR_BAD_PARAMETERS;
++		goto exit_operate;
++	}
++
++	/* Allocate the descriptor */
++	desc = caam_alloc_desc(BLOB_OPERATE_DESC_ENTRIES);
++	if (!desc) {
++		BLOB_TRACE("CAAM Context Descriptor Allocation error");
++		ret = TEE_ERROR_OUT_OF_MEMORY;
++		goto exit_operate;
++	}
++
++	/*
++	 * Create the Blob encapsulation/decapsulation descriptor
++	 */
++	/* Load the key modifier */
++	desc[desclen++] = LD_NOIMM(CLASS_2, REG_KEY, blob_data->key.length);
++	desc[desclen++] = paddr_key;
++
++	/* Define the Input data sequence */
++	desc[desclen++] = SEQ_IN_PTR(insize);
++	desc[desclen++] = paddr_input;
++
++	/* Define the Output data sequence */
++	desc[desclen++] = SEQ_OUT_PTR(outsize);
++	desc[desclen++] = out_buf.paddr;
++
++	if (blob_data->encaps) {
++		/* Define the encapsulation operation */
++		desc[desclen++] = BLOB_ENCAPS | opflag;
++	} else {
++		/* Define the decapsulation operation */
++		desc[desclen++] = BLOB_DECAPS | opflag;
++	}
++
++	/* Set the descriptor Header with length and index */
++	desc[0] = DESC_HEADER(desclen);
++
++	BLOB_DUMPDESC(desc);
++
++	cache_operation(TEE_CACHECLEAN, blob_data->key.data,
++		blob_data->key.length);
++
++	if (blob_data->encaps)
++		cache_operation(TEE_CACHECLEAN, blob_data->payload.data,
++			rinsize);
++	else
++		cache_operation(TEE_CACHECLEAN, blob_data->blob.data,
++			rinsize);
++
++	if (out_buf.nocache == 0)
++		cache_operation(TEE_CACHEFLUSH, out_buf.data, out_buf.length);
++
++	jobctx.desc = desc;
++	retstatus = caam_jr_enqueue(&jobctx, NULL);
++
++	if (retstatus == CAAM_NO_ERROR) {
++		BLOB_TRACE("Done CAAM BLOB %s",
++				blob_data->encaps ? "Encaps" : "Decaps");
++
++		if (out_buf.nocache == 0)
++			cache_operation(TEE_CACHEINVALIDATE, out_buf.data,
++				out_buf.length);
++
++		BLOB_DUMPBUF("Output", out_buf.data, routsize);
++
++		if (retS == 1) {
++			/*
++			 * Copy the result data in the correct output
++			 * buffer function of the operation direction
++			 */
++			if (blob_data->encaps)
++				memcpy(blob_data->blob.data,
++					out_buf.data, routsize);
++			else
++				memcpy(blob_data->payload.data,
++					out_buf.data, routsize);
++
++			ret = TEE_SUCCESS;
++		}
++
++		if (blob_data->encaps)
++			blob_data->blob.length = routsize;
++		else
++			blob_data->payload.length = routsize;
++	} else {
++		BLOB_TRACE("CAAM Status 0x%08"PRIx32"", jobctx.status);
++		ret = TEE_ERROR_GENERIC;
++	}
++
++exit_operate:
++	if (retS == 1)
++		caam_free_buf(&out_buf);
++
++	caam_free_desc(&desc);
++	return ret;
++}
++
++/**
++ * @brief   Registration of the Blob Driver
++ */
++struct imxcrypt_blob driver_blob = {
++	.operate = &do_operate,
++};
++
++/**
+  * @brief   Initialize the Blob module
+  *
+  * @param[in] ctrl_addr   Controller base address
+@@ -180,8 +405,10 @@ enum CAAM_Status caam_blob_init(vaddr_t ctrl_addr __unused)
+ 	enum CAAM_Status retstatus = CAAM_FAILURE;
+
+ 	/* Register the HUK Driver */
+-	if (imxcrypt_register(CRYPTO_HUK, &driver_huk) == 0)
+-		retstatus = CAAM_NO_ERROR;
++	if (imxcrypt_register(CRYPTO_HUK, &driver_huk) == 0) {
++		if (imxcrypt_register(CRYPTO_BLOB, &driver_blob) == 0)
++			retstatus = CAAM_NO_ERROR;
++	}
+
+ 	return retstatus;
+-}
++}
+\ No newline at end of file
+diff --git a/core/drivers/caam/caam_ctrl.c b/core/drivers/caam/caam_ctrl.c
+index e94c0aa..dd822d8 100644
+--- a/core/drivers/caam/caam_ctrl.c
++++ b/core/drivers/caam/caam_ctrl.c
+@@ -36,6 +36,9 @@
+ #ifdef CFG_CRYPTO_BLOB_HW
+ #include "caam_blob.h"
+ #endif
++#ifdef CFG_CRYPTO_BK_HW
++#include "caam_bk.h"
++#endif
+
+ /* Utils includes */
+ #include "utils_mem.h"
+@@ -168,6 +171,15 @@ static TEE_Result crypto_driver_init(void)
+ 	}
+ #endif
+
++#ifdef CFG_CRYPTO_BK_HW
++	/* Initialize the Black key Module */
++	retstatus = caam_bk_init(jr_cfg.base);
++	if (retstatus != CAAM_NO_ERROR) {
++		retresult = TEE_ERROR_GENERIC;
++		goto exit_init;
++	}
++#endif
++
+ 	/* Everything is OK, register the Power Management handler */
+ 	caam_pwr_init();
+
+diff --git a/core/drivers/caam/hal/common/hal_ctrl.c b/core/drivers/caam/hal/common/hal_ctrl.c
+index 322d9a5..20baad4 100644
+--- a/core/drivers/caam/hal/common/hal_ctrl.c
++++ b/core/drivers/caam/hal/common/hal_ctrl.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /**
+- * @copyright 2018 NXP
++ * @copyright 2018-2019 NXP
+  *
+  * @file    hal_ctrl.c
+  *
+@@ -8,8 +8,8 @@
+  *          Implementation of primitives to access HW
+  */
+
+-/* Global includes */
+-#include <io.h>
++/* Local includes */
++#include "caam_io.h"
+
+ #ifdef CFG_CRYPTO_HASH_HW
+ /* Library i.MX includes */
+@@ -20,8 +20,15 @@
+ #include "hal_ctrl.h"
+
+ /* Register includes */
++#include "ctrl_regs.h"
++
++/* Register includes */
+ #include "version_regs.h"
+
++#include <trace.h>
++
++#define CHECK_MPPRIVK
++
+ /**
+  * @brief   Returns the number of Job Ring supported
+  *
+@@ -33,7 +40,7 @@ uint8_t hal_ctrl_jrnum(vaddr_t baseaddr)
+ {
+ 	uint32_t val;
+
+-	val = read32(baseaddr + CHANUM_MS);
++	val = get32(baseaddr + CHANUM_MS);
+
+ 	return GET_CHANUM_MS_JRNUM(val);
+ }
+@@ -52,11 +59,11 @@ int hal_ctrl_hash_limit(vaddr_t baseaddr)
+ 	uint32_t val;
+
+ 	/* Read the number of instance */
+-	val = read32(baseaddr + CHANUM_LS);
++	val = get32(baseaddr + CHANUM_LS);
+
+ 	if (GET_CHANUM_LS_MDNUM(val)) {
+ 		/* Hashing is supported */
+-		val = read32(baseaddr + CHAVID_LS);
++		val = get32(baseaddr + CHAVID_LS);
+ 		val &= BM_CHAVID_LS_MDVID;
+ 		if (val == CHAVID_LS_MDVID_LP256)
+ 			return HASH_SHA256;
+@@ -81,7 +88,7 @@ bool hal_ctrl_splitkey(vaddr_t baseaddr)
+ 	uint32_t val;
+
+ 	/* Read the number of instance */
+-	val = read32(baseaddr + CAAMVID_MS);
++	val = get32(baseaddr + CAAMVID_MS);
+
+ 	if (GET_CAAMVID_MS_MAJ_REV(val) < 3) {
+ 		return false;
+@@ -104,9 +111,146 @@ uint8_t hal_ctrl_caam_era(vaddr_t baseaddr)
+ 	uint32_t val;
+
+ 	/* Read the number of instance */
+-	val = read32(baseaddr + CCBVID);
++	val = get32(baseaddr + CCBVID);
+
+ 	return GET_CCBVID_CAAM_ERA(val);
+ }
+ #endif
+
++#ifdef CFG_CRYPTO_MP_HW
++
++/**
++ * @brief   Get the size in bytes of the MPMR\n
++ *          knowing that MPMR reigster is 8 bits.
++ *
++ * @retval MPMR_NB_REG   Size in bytes of the MPMR
++ */
++size_t hal_ctrl_get_mpmr_size(void)
++{
++	return MPMR_NB_REG;
++}
++
++/**
++ * @brief   Get the SCFGR content and check the MPCURVE fields
++ *
++ * @param[in] ctrl_addr  Controller base address
++ *
++ * @retval true       Success
++ * @retval false      Failure
++ */
++bool hal_ctrl_is_mpcurve(vaddr_t ctrl_addr __maybe_unused)
++{
++#ifdef CHECK_MPPRIVK
++	uint32_t val_scfgr;
++
++	/* get the SCFGR content */
++	val_scfgr = get32(ctrl_addr + SCFGR);
++	DMSG("val_scfgr = 0x%x", val_scfgr);
++
++	/**
++	 * check if the MPCURVE field value is 0
++	 * which means that the MP Private key has not been generated
++	 */
++	if (val_scfgr & BM_SCFGR_MPCURVE)
++		return true;
++
++#endif
++
++	/*
++	 * always return false to generate private key
++	 * even if the MPCURVE field is not clear
++	 */
++	return false;
++}
++
++/**
++ * @brief   Get the MPMR content
++ *
++ * @param[in] ctrl_addr  Controller base address
++ * @param[out] val_scfgr Value of the MPMR
++ */
++void hal_ctrl_get_mpmr(vaddr_t ctrl_addr, uint8_t *val_scfgr)
++{
++	int i;
++	uint32_t val;
++	/*
++     * get the SCFGR content
++     * Note that the MPMR endianess is reverted between write and read
++     */
++	for (i = 0; i < MPMR_NB_REG; i += 4) {
++		val = get32(ctrl_addr + MPMR + i);
++		val_scfgr[i]     = (uint8_t)((val >> 24) & 0xFF);
++		val_scfgr[i + 1] = (uint8_t)((val >> 16) & 0xFF);
++		val_scfgr[i + 2] = (uint8_t)((val >> 8) & 0xFF);
++		val_scfgr[i + 3] = (uint8_t)(val & 0xFF);
++	}
++
++}
++
++/**
++ * @brief   Fill the MPMR content then lock the register
++ *
++ * @param[in] ctrl_addr  Controller base address
++ * @param[in] msg_mpmr   Buffer with the message and length
++ *                       to fill the MPMR content
++ */
++void hal_ctrl_fill_mpmr(vaddr_t ctrl_addr, struct imxcrypt_buf *msg_mpmr)
++{
++	int i;
++	vaddr_t reg = ctrl_addr + MPMR;
++	bool is_filled = false;
++	uint32_t val = 0;
++	uint16_t min, remain;
++
++	/* check if the MPMR is filled */
++	if (get32(ctrl_addr + SCFGR) & BM_SCFGR_MPMRL)
++		is_filled = true;
++
++	DMSG("is_filled = %s", is_filled?"true":"false");
++
++	/* if the MPMR is not filled */
++	if (!is_filled) {
++		/*
++		 * find the min between the message length
++		 * and the MPMR_NB_REG
++		 */
++		min = MIN(msg_mpmr->length, (uint8_t)MPMR_NB_REG);
++		remain = min % 4;
++
++		/* fill the MPMR with the first entiere 32 bits value */
++		for (i = 0; i < (min-remain); i += 4, reg += 4) {
++			val = (msg_mpmr->data[i] |
++					(msg_mpmr->data[i + 1] << 8) |
++					(msg_mpmr->data[i + 2] << 16) |
++					(msg_mpmr->data[i + 3] << 24));
++			write32(val, reg);
++		}
++
++		if (remain) {
++			val = 0;
++			/*
++			 * fill the MPMR with the 8 bits values
++			 * until the end of the message length
++			 */
++			for (i = 0; i < remain; i++)
++				val |= (msg_mpmr->data[i] << (i*8));
++			write32(val, reg);
++			reg += 4;
++		}
++		/* fill the remain of the MPMR with 0 */
++		remain = MPMR_NB_REG - ROUNDUP(msg_mpmr->length, 4);
++		for (i = 0; i < (remain / 4); i++, reg += 4)
++			write32(0x0, reg);
++
++		/*
++		 * locks the MPMR for writing
++		 * remains locked until the next power-on session
++		 * set the MPMRL bit of SCFRG to 1
++		 */
++		write32((get32(ctrl_addr + SCFGR) | BM_SCFGR_MPMRL),
++			ctrl_addr + SCFGR);
++
++		DMSG("val_scfgr = 0x%x", get32(ctrl_addr + SCFGR));
++	}
++}
++#endif // CFG_CRYPTO_MP_HW
+\ No newline at end of file
+diff --git a/core/drivers/caam/hal/imx_6_7/hal_ctrl.c b/core/drivers/caam/hal/imx_6_7/hal_ctrl.c
+index ae7fdbb..9457ad3 100644
+--- a/core/drivers/caam/hal/imx_6_7/hal_ctrl.c
++++ b/core/drivers/caam/hal/imx_6_7/hal_ctrl.c
+@@ -61,141 +61,3 @@ void hal_ctrl_init(vaddr_t baseaddr)
+
+ 	caam_pwr_add_backup(baseaddr, ctrl_backup, ARRAY_SIZE(ctrl_backup));
+ }
+-
+-#ifdef CFG_CRYPTO_MP_HW
+-
+-/**
+- * @brief   Get the size in bytes of the MPMR\n
+- *          knowing that MPMR reigster is 8 bits.
+- *
+- * @retval MPMR_NB_REG   Size in bytes of the MPMR
+- */
+-size_t hal_ctrl_get_mpmr_size(void)
+-{
+-	return MPMR_NB_REG;
+-}
+-
+-/**
+- * @brief   Get the SCFGR content and check the MPCURVE fields
+- *
+- * @param[in] ctrl_addr  Controller base address
+- *
+- * @retval true       Success
+- * @retval false      Failure
+- */
+-bool hal_ctrl_is_mpcurve(vaddr_t ctrl_addr __maybe_unused)
+-{
+-#ifdef CHECK_MPPRIVK
+-	uint32_t val_scfgr;
+-
+-	/* get the SCFGR content */
+-	val_scfgr = read32(ctrl_addr + SCFGR);
+-	DMSG("val_scfgr = 0x%x", val_scfgr);
+-
+-	/**
+-	 * check if the MPCURVE field value is 0
+-	 * which means that the MP Private key has not been generated
+-	 */
+-	if (val_scfgr & BM_SCFGR_MPCURVE)
+-		return true;
+-
+-#endif
+-
+-	/*
+-	 * always return false to generate private key
+-	 * even if the MPCURVE field is not clear
+-	 */
+-	return false;
+-}
+-
+-/**
+- * @brief   Get the MPMR content
+- *
+- * @param[in] ctrl_addr  Controller base address
+- * @param[out] val_scfgr Value of the MPMR
+- */
+-void hal_ctrl_get_mpmr(vaddr_t ctrl_addr, uint8_t *val_scfgr)
+-{
+-	int i;
+-	uint32_t val;
+-	/*
+-     * get the SCFGR content
+-     * Note that the MPMR endianess is reverted between write and read
+-     */
+-	for (i = 0; i < MPMR_NB_REG; i += 4) {
+-		val = read32(ctrl_addr + MPMR + i);
+-		val_scfgr[i]     = (uint8_t)((val >> 24) & 0xFF);
+-		val_scfgr[i + 1] = (uint8_t)((val >> 16) & 0xFF);
+-		val_scfgr[i + 2] = (uint8_t)((val >> 8) & 0xFF);
+-		val_scfgr[i + 3] = (uint8_t)(val & 0xFF);
+-	}
+-
+-}
+-
+-/**
+- * @brief   Fill the MPMR content then lock the register
+- *
+- * @param[in] ctrl_addr  Controller base address
+- * @param[in] msg_mpmr   Buffer with the message and length
+- *                       to fill the MPMR content
+- */
+-void hal_ctrl_fill_mpmr(vaddr_t ctrl_addr, struct imxcrypt_buf *msg_mpmr)
+-{
+-	int i;
+-	vaddr_t reg = ctrl_addr + MPMR;
+-	bool is_filled = false;
+-	uint32_t val = 0;
+-	uint16_t min, remain;
+-
+-	/* check if the MPMR is filled */
+-	if (read32(ctrl_addr + SCFGR) & BM_SCFGR_MPMRL)
+-		is_filled = true;
+-
+-	DMSG("is_filled = %s", is_filled?"true":"false");
+-
+-	/* if the MPMR is not filled */
+-	if (!is_filled) {
+-		/*
+-		 * find the min between the message length
+-		 * and the MPMR_NB_REG
+-		 */
+-		min = MIN(msg_mpmr->length, (uint8_t)MPMR_NB_REG);
+-		remain = min % 4;
+-
+-		/* fill the MPMR with the first entiere 32 bits value */
+-		for (i = 0; i < (min-remain); i += 4, reg += 4) {
+-			val = (msg_mpmr->data[i] |
+-					(msg_mpmr->data[i + 1] << 8) |
+-					(msg_mpmr->data[i + 2] << 16) |
+-					(msg_mpmr->data[i + 3] << 24));
+-			write32(val, reg);
+-		}
+-
+-		if (remain) {
+-			val = 0;
+-			/*
+-			 * fill the MPMR with the 8 bits values
+-			 * until the end of the message length
+-			 */
+-			for (i = 0; i < remain; i++)
+-				val |= (msg_mpmr->data[i] << (i*8));
+-			write32(val, reg);
+-			reg += 4;
+-		}
+-		/* fill the remain of the MPMR with 0 */
+-		remain = MPMR_NB_REG - ROUNDUP(msg_mpmr->length, 4);
+-		for (i = 0; i < (remain / 4); i++, reg += 4)
+-			write32(0x0, reg);
+-
+-		/*
+-		 * locks the MPMR for writing
+-		 * remains locked until the next power-on session
+-		 * set the MPMRL bit of SCFRG to 1
+-		 */
+-		write32((read32(ctrl_addr + SCFGR) | BM_SCFGR_MPMRL),
+-			ctrl_addr + SCFGR);
+-
+-		DMSG("val_scfgr = 0x%x", read32(ctrl_addr + SCFGR));
+-	}
+-}
+-#endif // CFG_CRYPTO_MP_HW
+diff --git a/core/drivers/caam/hal/imx_8m/registers/ctrl_regs.h b/core/drivers/caam/hal/imx_8m/registers/ctrl_regs.h
+index e22cd05..e373494 100644
+--- a/core/drivers/caam/hal/imx_8m/registers/ctrl_regs.h
++++ b/core/drivers/caam/hal/imx_8m/registers/ctrl_regs.h
+@@ -31,5 +31,14 @@
+ #define JRxDID_MS_PRIM_TZ			BIT32(4)
+ #define JRxDID_MS_PRIM_DID(val)		SHIFT_U32((val & 0xF), 0)
+
++/* Security Configuration */
++#define SCFGR					0x000C
++#define BM_SCFGR_MPCURVE		SHIFT_U32(0xF, 28)
++#define BM_SCFGR_MPMRL          BIT32(26)
++
++/* Manufacturing Protection Message */
++#define MPMR					0x0380
++#define MPMR_NB_REG             0x20
++
+ #endif /* __CTRL_REGS_H__ */
+
+diff --git a/core/drivers/caam/include/caam_bk.h b/core/drivers/caam/include/caam_bk.h
+new file mode 100644
+index 0000000..ab64f59
+--- /dev/null
++++ b/core/drivers/caam/include/caam_bk.h
+@@ -0,0 +1,20 @@
++ /*
++ * @brief   CAAM Black key header
++ */
++#ifndef __CAAM_BK_H__
++#define __CAAM_BK_H__
++
++/* Global includes */
++#include <tee_api_types.h>
++
++/**
++ * @brief   Initialize the Black key module
++ *
++ * @param[in] ctrl_addr   Controller base address
++ *
++ * @retval  CAAM_NO_ERROR    Success
++ * @retval  CAAM_FAILURE     An error occurred
++ */
++enum CAAM_Status caam_bk_init(vaddr_t ctrl_addr);
++
++#endif /* __CAAM_BK_H__ */
+\ No newline at end of file
+diff --git a/core/drivers/caam/include/caam_blob.h b/core/drivers/caam/include/caam_blob.h
+index aa2bb04..defa22f 100644
+--- a/core/drivers/caam/include/caam_blob.h
++++ b/core/drivers/caam/include/caam_blob.h
+@@ -13,15 +13,6 @@
+ #include <tee_api_types.h>
+
+ /**
+- * @brief   Blob Key Modifier size in bytes
+- */
+-#define BLOB_KEY_MODIFIER_SIZE	16
+-/**
+- * @brief   Blob Key (BKEK) size in bytes
+- */
+-#define BLOB_BKEK_SIZE			32
+-
+-/**
+  * @brief   Initialize the Blob module
+  *
+  * @param[in] ctrl_addr   Controller base address
+diff --git a/core/drivers/caam/include/caam_io.h b/core/drivers/caam/include/caam_io.h
+new file mode 100644
+index 0000000..3520e31
+--- /dev/null
++++ b/core/drivers/caam/include/caam_io.h
+@@ -0,0 +1,55 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    caam_io.h
++ *
++ * @brief   CAAM driver caam_io.h include file.\n
++ *          Macros for reading/writing CAAM registers
++ *          taking care of endianness.
++ */
++
++#ifndef __CAAM_IO_H__
++#define __CAAM_IO_H__
++
++#include <io.h>
++
++#define put_le64(a, v)		(*(volatile uint64_t *)(a) = (v))
++
++#define setbits_le32(a, v)      write32((vaddr_t)(a), read32((vaddr_t)(a)) | (v))
++#define clrbits_le32(a, c)      write32((vaddr_t)(a), read32((vaddr_t)(a)) & ~(c))
++#define clrsetbits_le32(a, c, s)        write32((vaddr_t)(a), (read32((vaddr_t)(a)) & ~(c)) | (s))
++
++#define setbits_be32(a, v)      put_be32((void *)(a), get_be32((void *)(a)) | (v))
++#define clrbits_be32(a, c)      put_be32((void *)(a), get_be32((void *)(a)) & ~(c))
++#define clrsetbits_be32(a, c, s)        put_be32((void *)(a), (get_be32((void *)(a)) & ~(c)) | (s))
++
++#ifdef CFG_NXP_SEC_BE
++#define get32(a)		get_be32((void *)(a))
++#define put32(a, v)		put_be32((void *)(a), v)
++#define get64(a)	(                                       \
++		((uint64_t)get32(a) << 32) |        \
++		(get32((uintptr_t)(a) + 4)))
++#define put64(a, v)	put_be64((void *)(a), v)
++#define mask32(a, v, mask) (		\
++	put32(a, (get32(a) & ~mask) | (v & mask)))
++#else
++#define get32(a)		read32((vaddr_t)(a))
++#define put32(a, v)		write32(v, (vaddr_t)(a))
++#define get64(a)	(                                       \
++		((uint64_t)get32((uintptr_t)(a) + 4) << 32) |    \
++		(get32(a)))
++#define put64(a, v)	put_le64(a, v)
++#define mask32(a, v, mask) (		\
++	put32(a, (get32(a) & ~mask) | (v & mask)))
++#endif
++
++#ifdef	CFG_PHYS_64BIT
++#define sec_read_addr(a)	get64(a)
++#define sec_write_addr(a, v)    put64(a, v)
++#else
++#define sec_read_addr(a)	get32(a)
++#define sec_write_addr(a, v)    put32(a, v)
++#endif
++
++#endif /* __CAAM_IO_H__ */
+\ No newline at end of file
+diff --git a/core/drivers/caam/include/desc_defines.h b/core/drivers/caam/include/desc_defines.h
+index bd090a4..a9b5d68 100644
+--- a/core/drivers/caam/include/desc_defines.h
++++ b/core/drivers/caam/include/desc_defines.h
+@@ -324,6 +324,13 @@
+ #define PROT_RSA_KEY_ALL		0
+ #define PROT_RSA_KEY_N_D		2
+
++/* RSA black key */
++#define PROT_RSA_KEY_TYPE(type) SHIFT_U32(PROT_RSA_KEY_##type, 8)
++#define PROT_RSA_KEY_RED		0
++#define PROT_RSA_KEY_ENC		1
++#define PROT_RSA_KEY_TK_ENC	    5
++#define PROT_RSA_KEY_EKT		3
++
+ /*
+  * ECC Protocol Information
+  */
+@@ -337,6 +344,16 @@
+  * BLOB Protocol Information
+  */
+ #define PROT_BLOB_FMT_MSTR		BIT32(1)
++#define PROT_BLOB_FMT_MSTR			BIT32(1)
++#define PROT_BLOB_TYPE(type)		SHIFT_U32(1, PROT_BLOB_TYPE_##type)
++#define PROT_BLOB_TYPE_BLACK_KEY	2
++#define PROT_BLOB_EKT				8
++#define PROT_BLOB_INFO(aes)			SHIFT_U32(PROT_BLOB_AES_##aes, \
++					PROT_BLOB_EKT)
++#define PROT_BLOB_AES_CCM			1
++#define PROT_BLOB_AES_ECB			0
++#define PROT_BLOB_FORMAT(format)	SHIFT_U32(0, PROT_BLOB_FORMAT_##format)
++#define PROT_BLOB_FORMAT_NORMAL		0
+
+ /*
+  * Algorithm Identifier
+@@ -518,13 +535,13 @@
+ #define MATHI_IMM_VALUE(val)	SHIFT_U32((val & 0xFF), 4)
+
+ /*
+- * Sequence Output
++ * Sequence Input/Output
+  */
++#define CMD_SEQ_IN_TYPE			CMD_TYPE(0x1E)
+ #define CMD_SEQ_OUT_TYPE		CMD_TYPE(0x1F)
+
+ /* Length */
+-#define SEQ_OUT_LENGTH(len)		SHIFT_U32((len & 0xFFFF), 0)
+-
++#define SEQ_LENGTH(len)			SHIFT_U32((len & 0xFFFF), 0)
+ /*
+  * PKHA Operation
+  */
+@@ -630,6 +647,10 @@
+ /* ECC Domain Selection */
+ #define PDB_ECC_ECDSEL(curve)		SHIFT_U32((curve & 0x3F), 7)
+
++/* Black key padding */
++#define BLACK_KEY_NONCE_SIZE		6
++#define BLACK_KEY_ICV_SIZE			6
++
+ /*
+  * ECC Predefined Domain
+  */
+diff --git a/core/drivers/caam/include/desc_helper.h b/core/drivers/caam/include/desc_helper.h
+index 71f2371..61713be 100644
+--- a/core/drivers/caam/include/desc_helper.h
++++ b/core/drivers/caam/include/desc_helper.h
+@@ -476,10 +476,42 @@ static inline void dump_desc(void *desc)
+ 			PROT_BLOB_FMT_MSTR)
+
+ /**
++ * @brief   Blob encapsulation
++ */
++#define BLOB_ENCAPS \
++			(CMD_OP_TYPE | OP_TYPE(ENCAPS) | PROTID(BLOB) | \
++			PROT_BLOB_FORMAT(NORMAL))
++
++/**
++ * @brief   Blob decapsulation
++ */
++#define BLOB_DECAPS \
++			(CMD_OP_TYPE | OP_TYPE(DECAPS) | PROTID(BLOB) | \
++			PROT_BLOB_FORMAT(NORMAL))
++
++/**
++ * @brief Black key CCM size
++ */
++#define BLACK_KEY_CCM_SIZE(size) \
++			(ROUNDUP(size, 8) + BLACK_KEY_NONCE_SIZE + \
++			BLACK_KEY_ICV_SIZE)
++/**
++ * @brief Black key ECB size
++ */
++#define BLACK_KEY_ECB_SIZE(size) \
++			ROUNDUP(size, 16)
++
++/**
++ * @brief   Sequence Inout Pointer of length \a len
++ */
++#define SEQ_IN_PTR(len) \
++			(CMD_SEQ_IN_TYPE | SEQ_LENGTH(len))
++
++/**
+  * @brief   Sequence Output Pointer of length \a len
+  */
+ #define SEQ_OUT_PTR(len) \
+-			(CMD_SEQ_OUT_TYPE | SEQ_OUT_LENGTH(len))
++			(CMD_SEQ_OUT_TYPE | SEQ_LENGTH(len))
+
+ #endif /* __DESC_HELPER_H__ */
+
+diff --git a/core/drivers/caam/sub.mk b/core/drivers/caam/sub.mk
+index 78c357d..d94ffce 100644
+--- a/core/drivers/caam/sub.mk
++++ b/core/drivers/caam/sub.mk
+@@ -11,6 +11,7 @@ srcs-y += caam_rng.c
+ srcs-$(CFG_CRYPTO_HASH_HW)      += caam_hash.c
+ srcs-$(CFG_CRYPTO_MP_HW)        += caam_mp.c
+ srcs-$(CFG_CRYPTO_BLOB_HW)      += caam_blob.c
++srcs-$(CFG_CRYPTO_BK_HW)        += caam_bk.c
+ subdirs-$(CFG_CRYPTO_CIPHER_HW) += cipher
+ subdirs-$(CFG_CRYPTO_PK_HW)     += acipher
+
+diff --git a/core/lib/libimxcrypt/crypto_api/bk/bk.c b/core/lib/libimxcrypt/crypto_api/bk/bk.c
+new file mode 100644
+index 0000000..dbc5af8
+--- /dev/null
++++ b/core/lib/libimxcrypt/crypto_api/bk/bk.c
+@@ -0,0 +1,206 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    bk.c
++ *
++ * @brief   Cryptographic library using the i.MX CAAM driver.\n
++ *          Black key crypto_* interface implementation.
++ */
++
++/* Global includes */
++#include <crypto/crypto.h>
++#include <trace.h>
++
++/* Library i.MX includes */
++#include <crypto_extension.h>
++#include <libimxcrypt_bk.h>
++
++#ifdef LIB_DEBUG
++#define LIB_TRACE	DMSG
++#else
++#define LIB_TRACE(...)
++#endif
++
++/**
++ * @brief Encapsulates a plain key.
++ *
++ * @param[in] alg    CAAM cryptographic algorithm id
++ * @param[in] type   Encapsulation type
++ * @param[in] pk     Plain key to encapsulate
++ * @param[in] bk     Output black key
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result bk_encapsulate(enum imxcrypt_algo_id alg, enum bk_type type,
++		const struct imxcrypt_buf *pk, struct imxcrypt_buf *bk) {
++	TEE_Result ret;
++	struct imxcrypt_bk_key bk_key = { 0 };
++	struct imxcrypt_bk *bkdrv = NULL;
++
++	bkdrv = imxcrypt_getmod(CRYPTO_BK);
++	if (!bkdrv) {
++		LIB_TRACE("Black key is not supported");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	/* Check input parameters */
++	if ((!pk) || (!bk)) {
++		LIB_TRACE("One of the input data is not defined");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check plain key data is defined */
++	if (!pk->data) {
++		LIB_TRACE("Plain key buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check black key data is defined and big enough */
++	if (!bk->data) {
++		LIB_TRACE("BK buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check BK Type */
++	if (type > BK_MAX_TYPE) {
++		LIB_TRACE("BK type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check Algorithm Id */
++	if (alg >= CRYPTO_MAX_ALGO) {
++		LIB_TRACE("BK type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check black key buffer size if type = ECB */
++	if ((type == BK_ECB) && (bk->length < ECB_BLACK_KEY_SIZE(pk->length))) {
++		LIB_TRACE("BK length too short");
++		return TEE_ERROR_SHORT_BUFFER;
++	}
++
++	/* Check black key buffer size if type = CCM */
++	if ((type == BK_CCM) && (bk->length < CCM_BLACK_KEY_SIZE(pk->length))) {
++		LIB_TRACE("BK length too short");
++		return TEE_ERROR_SHORT_BUFFER;
++	}
++
++	/* Fill black key data structure */
++	bk_key.type = type;
++	bk_key.alg = alg;
++	bk_key.pk.data = pk->data;
++	bk_key.pk.length = pk->length;
++	bk_key.bk.data = bk->data;
++	bk_key.bk.length = bk->length;
++
++	/* Operate */
++	ret = bkdrv->encapsulate(&bk_key);
++
++	/* Return the size of the encapsulated key */
++	bk->length = bk_key.bk.length;
++
++	return ret;
++}
++
++/**
++ * @brief Sign data using a black key.
++ *
++ * @param[in] alg       CAAM cryptographic algorithm id
++ * @param[in] type      Encapsulation type
++ * @param[in] key       Key array
++ * @param[in] key_sz    Black keys array size
++ * @param[in] src       Source data
++ * @param[in/out] dst   Destination data
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result bk_sign(enum imxcrypt_algo_id alg, enum bk_type type,
++		const struct imxcrypt_buf key[], size_t key_sz,
++		const struct imxcrypt_buf *src, struct imxcrypt_buf *dst) {
++
++	TEE_Result ret;
++	struct imxcrypt_bk_data bk_data = { 0 };
++	struct imxcrypt_bk *bkdrv = NULL;
++	size_t ki;
++
++	bkdrv = imxcrypt_getmod(CRYPTO_BK);
++	if (!bkdrv) {
++		LIB_TRACE("Black key is not supported");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	/* Check input parameters */
++	if ((!key) || (!src) || (!dst)) {
++		LIB_TRACE("One of the input data is not defined");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check keys count */
++	if ((key_sz >= BK_MAX_KEYS) || key_sz < 1) {
++		LIB_TRACE("Key counts incorrect");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check if at least one key data is defined */
++	if (!(key[0].data)) {
++		LIB_TRACE("Black key buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check Input data is defined and big enough */
++	if (!src->data) {
++		LIB_TRACE("BK buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check Output data is defined and big enough */
++	if (!dst->data) {
++		LIB_TRACE("BK buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check BK Type */
++	if (type >= BK_MAX_TYPE) {
++		LIB_TRACE("BK type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check Algorithm Id */
++	if (alg >= CRYPTO_MAX_ALGO) {
++		LIB_TRACE("BK type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Fill in data structure */
++	bk_data.type = type;
++	bk_data.alg = alg;
++	bk_data.src.data = src->data;
++	bk_data.src.length = src->length;
++	bk_data.dst.data = dst->data;
++	bk_data.dst.length = dst->length;
++
++	for (ki = 0; ki < key_sz; ki++) {
++		bk_data.key[ki].data = key[ki].data;
++		bk_data.key[ki].length = key[ki].length;
++	}
++
++	bk_data.key_sz = key_sz;
++
++	ret = bkdrv->sign(&bk_data);
++
++	/* Return the size of dest data */
++	dst->length = bk_data.dst.length;
++
++	return ret;
++}
+diff --git a/core/lib/libimxcrypt/crypto_api/bk/sub.mk b/core/lib/libimxcrypt/crypto_api/bk/sub.mk
+new file mode 100644
+index 0000000..71037c3
+--- /dev/null
++++ b/core/lib/libimxcrypt/crypto_api/bk/sub.mk
+@@ -0,0 +1 @@
++srcs-y += bk.c
+\ No newline at end of file
+diff --git a/core/lib/libimxcrypt/crypto_api/blob/blob.c b/core/lib/libimxcrypt/crypto_api/blob/blob.c
+new file mode 100644
+index 0000000..a3fb689
+--- /dev/null
++++ b/core/lib/libimxcrypt/crypto_api/blob/blob.c
+@@ -0,0 +1,183 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    blob.c
++ *
++ * @brief   Cryptographic library using the i.MX CAAM driver.\n
++ *          Blob crypto_* interface implementation.
++ */
++
++/* Global includes */
++#include <crypto/crypto.h>
++#include <trace.h>
++
++/* Library i.MX includes */
++#include <crypto_extension.h>
++#include <libimxcrypt_blob.h>
++
++//#define LIB_DEBUG
++#ifdef LIB_DEBUG
++#define LIB_TRACE	DMSG
++#else
++#define LIB_TRACE(...)
++#endif
++
++/**
++ * @brief Encapsulates input data.
++ *  Resulting blob is the input length + 48 bytes
++ *
++ * @param[in] type       Type of blob
++ * @param[in] key        Key derivation (must be 128 bits length)
++ * @param[in] payload    Data to encapsulate
++ *
++ * @param[in/out] blob   Resulting blob. The maximum length of the blob
++ *                       buffer in bytes must be given as input
++ *                       (blob length >= payload length + 48 bytes)
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result blob_encapsulate(enum blob_type type,
++		const uint8_t *key,
++		const struct imxcrypt_buf *payload,
++		struct imxcrypt_buf *blob)
++{
++	TEE_Result ret;
++	struct imxcrypt_blob_data blob_data = {0};
++	struct imxcrypt_blob *blobdrv = NULL;
++
++	blobdrv = imxcrypt_getmod(CRYPTO_BLOB);
++	if (!blobdrv) {
++		LIB_TRACE("Blob is not supported");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	/* Check input parameters */
++	if ((!key) || (!payload) || (!blob)) {
++		LIB_TRACE("One of the input data is not defined");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check payload data is defined */
++	if (!payload->data) {
++		LIB_TRACE("Payload buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check blob data is defined and big enough */
++	if (!blob->data) {
++		LIB_TRACE("Blob buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if ((blob->length - BLOB_BPAD_SIZE) < payload->length) {
++		LIB_TRACE("Blob length too short");
++		return TEE_ERROR_SHORT_BUFFER;
++	}
++
++	/* Check Blob Type */
++	if (type > BLOB_MAX_TYPE) {
++		LIB_TRACE("Blob type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	blob_data.type           = type;
++	blob_data.encaps         = true;
++	blob_data.key.data       = (uint8_t *)key;
++	blob_data.key.length     = BLOB_KEY_MODIFIER_SIZE;
++	blob_data.payload.data   = payload->data;
++	blob_data.payload.length = payload->length;
++	blob_data.blob.data      = blob->data;
++	blob_data.blob.length    = blob->length;
++
++	ret = blobdrv->operate(&blob_data);
++	/* Return the size of the encapsulated blob */
++	blob->length = blob_data.blob.length;
++
++	return ret;
++}
++
++/**
++ * @brief Decapsulates input blob.
++ *  Resulting data is the blob length - 48 bytes
++ *
++ * @param[in] type         Type of blob
++ * @param[in] key          Key derivation (must be 128 bits length)
++ * @param[in] blob         Resulting blob.
++ *
++ * @param[in/out] payload  Data to decapsulate. The maximum length of the
++ *                         buffer in bytes must be given as input
++ *                         (payload length >= blob length - 48 bytes)
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result blob_decapsulate(enum blob_type type,
++		const uint8_t *key,
++		struct imxcrypt_buf *payload,
++		const struct imxcrypt_buf *blob)
++{
++	TEE_Result ret;
++
++	struct imxcrypt_blob_data blob_data = {0};
++	struct imxcrypt_blob *blobdrv = NULL;
++
++	blobdrv = imxcrypt_getmod(CRYPTO_BLOB);
++	if (!blobdrv) {
++		LIB_TRACE("Blob is not supported");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	/* Check input parameters */
++	if ((!key) || (!payload) || (!blob)) {
++		LIB_TRACE("One of the input data is not defined");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check payload data is defined */
++	if (!payload->data) {
++		LIB_TRACE("Payload buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check blob data is defined and big enough */
++	if (!blob->data) {
++		LIB_TRACE("Blob buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (blob->length > (payload->length + BLOB_BPAD_SIZE)) {
++		LIB_TRACE("Payload length too short");
++		return TEE_ERROR_SHORT_BUFFER;
++	}
++
++	/* Check Blob Type */
++	if (type > BLOB_MAX_TYPE) {
++		LIB_TRACE("Blob type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	blob_data.type           = type;
++	blob_data.encaps         = false;
++	blob_data.key.data       = (uint8_t *)key;
++	blob_data.key.length     = BLOB_KEY_MODIFIER_SIZE;
++	blob_data.payload.data   = payload->data;
++	blob_data.payload.length = payload->length;
++	blob_data.blob.data      = blob->data;
++	blob_data.blob.length    = blob->length;
++
++	ret = blobdrv->operate(&blob_data);
++	/* Return the size of the decapsulated data */
++	payload->length = blob_data.payload.length;
++
++	return ret;
++}
+diff --git a/core/lib/libimxcrypt/crypto_api/blob/sub.mk b/core/lib/libimxcrypt/crypto_api/blob/sub.mk
+new file mode 100644
+index 0000000..501acd4
+--- /dev/null
++++ b/core/lib/libimxcrypt/crypto_api/blob/sub.mk
+@@ -0,0 +1 @@
++srcs-y += blob.c
+\ No newline at end of file
+diff --git a/core/lib/libimxcrypt/crypto_api/include/crypto_extension.h b/core/lib/libimxcrypt/crypto_api/include/crypto_extension.h
+index 42b19f1..1fe3c32 100644
+--- a/core/lib/libimxcrypt/crypto_api/include/crypto_extension.h
++++ b/core/lib/libimxcrypt/crypto_api/include/crypto_extension.h
+@@ -13,6 +13,7 @@
+ #include <tee_api_types.h>
+ #include <libimxcrypt.h>
+
++#ifdef _CFG_CRYPTO_WITH_MP
+ /**
+  * @brief   MP Signature Curve enumerate
+  */
+@@ -76,5 +77,101 @@ TEE_Result crypto_mp_sign(struct imxcrypt_mp_sign *sdata);
+  * @retval TEE_ERROR_GENERIC           Generic error
+  */
+ TEE_Result crypto_generate_huk(struct imxcrypt_buf *huk);
++#endif // _CFG_CRYPTO_WITH_MP
+
+-#endif /* __CRYPTO_EXTENSION_H */
++#ifdef _CFG_CRYPTO_WITH_BLOB
++/**
++ * @brief Encapsulates input data.
++ *  Resulting blob is the input length + 48 bytes
++ *
++ * @param[in] type       Type of blob
++ * @param[in] key        Key derivation (must be 128 bits length)
++ * @param[in] payload    Data to encapsulate
++ * @param[in] blob_len   Length of the blob buffer in bytes (size >= data_len +
++ *                       48 bytes)
++ *
++ * @param[in/out] blob   Resulting blob. The maximum length of the blob
++ *                       buffer in bytes must be given as input
++ *                       (size >= data_len + 48 bytes)
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result blob_encapsulate(enum blob_type type,
++		const uint8_t *key,
++		const struct imxcrypt_buf *payload,
++		struct imxcrypt_buf *blob);
++
++/**
++ * @brief Decapsulates input blob.
++ *  Resulting data is the blob length - 48 bytes
++ *
++ * @param[in] type         Type of blob
++ * @param[in] key          Key derivation (must be 128 bits length)
++ * @param[in] blob         Resulting blob.
++ *
++ * @param[in/out] payload  Data to decapsulate. The maximum length of the
++ *                         buffer in bytes must be given as input
++ *                         (payload length >= blob length - 48 bytes)
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result blob_decapsulate(enum blob_type type,
++		const uint8_t *key,
++		struct imxcrypt_buf *payload,
++		const struct imxcrypt_buf *blob);
++#endif // _CFG_CRYPTO_WITH_BLOB
++
++#ifdef _CFG_CRYPTO_WITH_BK
++/**
++ * @brief Encapsulates a key to a black key.
++ *
++ * @param[in] alg      Cryptographic Algorithm id
++ * @param[in] type     Type of black key
++ * @param[in] pk       Key to encapsulate
++ * @param[in/out] bk   Resulting black key.
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result bk_encapsulate(enum imxcrypt_algo_id alg, enum bk_type type,
++		const struct imxcrypt_buf *pk,
++		struct imxcrypt_buf *bk);
++
++/**
++ * @brief Sign data using a black key.
++ *
++ * @param[in] alg       CAAM cryptographic algorithm id
++ * @param[in] type      Encapsulation type
++ * @param[in] key       Key array
++ * @param[in] key_sz   Black keys array size
++ * @param[in] src       Source data
++ * @param[in/out] dst   Destination data
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result bk_sign(enum imxcrypt_algo_id alg, enum bk_type type,
++		const struct imxcrypt_buf key[], size_t key_sz,
++		const struct imxcrypt_buf *src, struct imxcrypt_buf *dst);
++
++#endif // _CFG_CRYPTO_WITH_BK
++
++#endif /* __CRYPTO_EXTENSION_H */
+\ No newline at end of file
+diff --git a/core/lib/libimxcrypt/crypto_api/include/libimxcrypt.h b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt.h
+index f9c957b..3f3ccd0 100644
+--- a/core/lib/libimxcrypt/crypto_api/include/libimxcrypt.h
++++ b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt.h
+@@ -31,7 +31,9 @@ enum imxcrypt_algo_id {
+ 	CRYPTO_MP,           ///< Manufacturing Protection driver
+ 	CRYPTO_MATH_HW,      ///< Mathematical HW operation driver
+ 	CRYPTO_HUK,          ///< Hardware Unique Key operation driver
+-	CRYPTO_MAX_ALGO      ///< Maximum numer of algo supported
++	CRYPTO_BLOB,         ///< Blob Encapsulation operation driver
++	CRYPTO_BK,           ///< Key Encapsulation operation driver
++	CRYPTO_MAX_ALGO      ///< Maximum number of algo supported
+ };
+
+ /**
+@@ -43,6 +45,60 @@ struct imxcrypt_buf {
+ };
+
+ /**
++ * @brief Blob encryption type
++ */
++enum blob_type {
++	RED       = 0,  ///< Red Blob mode   - data in plain text
++	BLACK_ECB,      ///< Black Blob mode - data encrypted in AES ECB
++	BLACK_CCM,      ///< Black Blod mode - data encrypted in AES CCM
++	BLOB_MAX_TYPE   ///< Maximum number of blob type supported
++};
++
++/**
++ * @brief Key encryption type
++ */
++enum bk_type {
++	BK_ECB,      ///< Black key mode - data encrypted in AES ECB
++	BK_CCM,      ///< Black key mode - data encrypted in AES CCM
++	BK_MAX_TYPE   ///< Maximum number of blob type supported
++};
++
++/**
++ * @brief   Blob Key Modifier size in bytes
++ */
++#define BLOB_KEY_MODIFIER_SIZE	16
++/**
++ * @brief   Blob Key (BKEK) size in bytes
++ */
++#define BLOB_BKEK_SIZE			32
++/**
++ * @brief   Blob MAC (BMAC) size in bytes
++ */
++#define BLOB_BMAC_SIZE			16
++/**
++ * @brief   Blob PAD (BPAD) size in bytes
++ */
++#define BLOB_BPAD_SIZE			(BLOB_BKEK_SIZE + BLOB_BMAC_SIZE)
++
++/**
++ * @brief   Max black key number for an operation
++ */
++#define BK_MAX_KEYS	10
++
++#define ROUNDUP(n, width) (((n) + (width) - 1) & ~((width) - 1))
++#define PAD_16_BYTE(_key_size) (ROUNDUP(_key_size, 16))
++#define ECB_BLACK_KEY_SIZE(_key_size) (PAD_16_BYTE(_key_size))
++#define PAD_8_BYTE(_key_size) (ROUNDUP(_key_size, 8))
++#define NONCE_SIZE 6
++#define IV_SIZE 6
++#define CCM_OVERHEAD (NONCE_SIZE + IV_SIZE)
++#define CCM_BLACK_KEY_SIZE(_key_size) (PAD_8_BYTE(_key_size) \
++	+ CCM_OVERHEAD)
++#define BLOB_OVERHEAD (32 + 16)
++#define SECRET_SIZE_IN_CCM_BLACK_KEY(_key_size) \
++	((_key_size >= CCM_OVERHEAD) ? _key_size - CCM_OVERHEAD : 0)
++
++/**
+  * @brief   Cryptographic module registration
+  *
+  * @param[in] idx  Crypto index in the array
+@@ -89,4 +145,4 @@ TEE_Result imxcrypt_libsoft_init(void);
+  */
+ TEE_Result crypto_driver_init(void);
+
+-#endif /* __LIBIMXCRYPT_H__ */
++#endif /* __LIBIMXCRYPT_H__ */
+\ No newline at end of file
+diff --git a/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_acipher.h b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_acipher.h
+index e2a1484..481363e 100644
+--- a/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_acipher.h
++++ b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_acipher.h
+@@ -34,6 +34,10 @@ struct rsakey {
+ 	void   *key;      ///< Public or Private key
+ 	size_t n_size;    ///< Size in bytes of the Modulus N
+ 	bool   isprivate; ///< True if private key
++#ifdef _CFG_CRYPTO_WITH_BK
++	bool   is_black; ///< True if private key is a black key
++	bool   bk_type; ///< Type of black key if is_black is true
++#endif
+ };
+
+ /**
+diff --git a/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_bk.h b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_bk.h
+new file mode 100644
+index 0000000..ca927a0
+--- /dev/null
++++ b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_bk.h
+@@ -0,0 +1,48 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    libimxcrypt_bk.h
++ *
++ * @brief   Cryptographic library using the i.MX CAAM driver.\n
++ *          Key encapsulation interface library vs CAAM driver.
++ */
++#ifndef __LIBIMXCRYPT_BK_H__
++#define __LIBIMXCRYPT_BK_H__
++
++#include <tee_api_types.h>
++
++/**
++ * @brief Black key structure
++ */
++struct imxcrypt_bk_key {
++	enum bk_type type; ///< Black encryption type
++	enum imxcrypt_algo_id alg; ///< Cryptographic algorithm id
++	struct imxcrypt_buf pk; ///< Plain key data payload
++	struct imxcrypt_buf bk; ///< Black key of payload
++};
++
++/**
++ * @brief Black key data structure
++ */
++
++struct imxcrypt_bk_data {
++	enum imxcrypt_algo_id alg; ///< Cryptographic algorithm id
++	enum bk_type type; ///< Type of black key
++	struct imxcrypt_buf src; ///< Source data
++	struct imxcrypt_buf dst; ///< Destination data
++	size_t key_sz; ///< Destination data
++	struct imxcrypt_buf key[BK_MAX_KEYS]; ///< Holds key components
++};
++
++
++/**
++ * @brief   i.MX Crypto Library Black key driver operations
++ */
++struct imxcrypt_bk {
++	///< Encapsulate key
++	TEE_Result (*encapsulate)(struct imxcrypt_bk_key *bk_key);
++	TEE_Result (*sign)(struct imxcrypt_bk_data *bk_data);
++};
++
++#endif /* __LIBIMXCRYPT_BK_H__ */
+diff --git a/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_blob.h b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_blob.h
+new file mode 100644
+index 0000000..ab348e5
+--- /dev/null
++++ b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_blob.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    libimxcrypt_blob.h
++ *
++ * @brief   Cryptographic library using the i.MX CAAM driver.\n
++ *          Blob data encapsulation interface library vs CAAM driver.
++ */
++#ifndef __LIBIMXCRYPT_BLOB_H__
++#define __LIBIMXCRYPT_BLOB_H__
++
++#include <tee_api_types.h>
++
++/**
++ * @brief Blob data structure
++ */
++struct imxcrypt_blob_data {
++	enum blob_type      type;    ///< Blob encryption type
++	bool                encaps;  ///< Encryption/Decryption direction
++	struct imxcrypt_buf key;     ///< Blob Key modifier
++	struct imxcrypt_buf payload; ///< Decrypted Blob data payload
++	struct imxcrypt_buf blob;    ///< Encrypted Blob of payload
++};
++
++/**
++ * @brief   i.MX Crypto Library BLOB driver operations
++ */
++struct imxcrypt_blob {
++	///< Encapsulate/Decapsulate data
++	TEE_Result (*operate)(struct imxcrypt_blob_data *blob_data);
++};
++
++#endif /* __LIBIMXCRYPT_BLOB_H__ */
+\ No newline at end of file
+diff --git a/core/lib/libimxcrypt/crypto_api/sub.mk b/core/lib/libimxcrypt/crypto_api/sub.mk
+index 6839963..c303399 100644
+--- a/core/lib/libimxcrypt/crypto_api/sub.mk
++++ b/core/lib/libimxcrypt/crypto_api/sub.mk
+@@ -12,3 +12,5 @@ subdirs-$(_CFG_CRYPTO_WITH_ACIPHER) += oid
+ subdirs-$(_CFG_CRYPTO_WITH_AUTHENC) += authenc
+ subdirs-$(_CFG_CRYPTO_WITH_MP)      += mp
+ subdirs-$(_CFG_CRYPTO_WITH_HUK)     += huk
++subdirs-$(_CFG_CRYPTO_WITH_BLOB)    += blob
++subdirs-$(_CFG_CRYPTO_WITH_BK)    += bk
+diff --git a/lib/libmbedtls/include/mbedtls_config_uta.h b/lib/libmbedtls/include/mbedtls_config_uta.h
+index 2f5f636..d3c6e8e 100644
+--- a/lib/libmbedtls/include/mbedtls_config_uta.h
++++ b/lib/libmbedtls/include/mbedtls_config_uta.h
+@@ -53,6 +53,8 @@
+ #define MBEDTLS_PEM_PARSE_C
+ #define MBEDTLS_PEM_WRITE_C
+
++#define MBEDTLS_CCM_C
++
+ #include <mbedtls/check_config.h>
+
+ #endif /* __MBEDTLS_CONFIG_UTA_H */
+diff --git a/lib/libutee/include/pta_bk.h b/lib/libutee/include/pta_bk.h
+new file mode 100644
+index 0000000..6dffa43
+--- /dev/null
++++ b/lib/libutee/include/pta_bk.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_bk.h
++ *
++ * @brief   PTA Black key interface identification.
++ */
++#ifndef __PTA_BK_H__
++#define __PTA_BK_H__
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ */
++#define PTA_BK_PTA_UUID { \
++	0xf4557e21, 0xaa4f, 0x4259, \
++	{0x90, 0xb6, 0xf9, 0x77, 0x6c, 0xee, 0xba, 0x29} }
++
++/**
++ * @brief   Encapsulates a plain key into black key command id
++ */
++#define PTA_BK_CMD_ENCAPS 1
++
++/**
++ * @brief   Sign using black key command id in PTA
++ */
++#define PTA_BK_CMD_SIGN   2
++
++/**
++ * @brief   Max key components count
++ */
++#define PTA_BK_MAX_KEYS 10
++
++/**
++ * @brief   PTA black key Type
++ *          Enumerate must be the same as the bk_type defined in the
++ *          crypto_extension.h
++ */
++enum PTA_BK_TYPE {
++	PTA_BK_ECB, ///< Black key mode - key encrypted in AES ECB
++	PTA_BK_CCM, ///< Black key mode - key encrypted in AES CCM
++};
++
++/**
++ * @brief   Data structure to holds key components.
++ */
++struct pta_bk_buf {
++	uint8_t *data; ///< Pointer to buffer
++	uint32_t length; ///< Buffer length
++};
++
++
++#endif /* __PTA_BK_H__ */
+diff --git a/lib/libutee/include/pta_blob.h b/lib/libutee/include/pta_blob.h
+new file mode 100644
+index 0000000..c5c9e15
+--- /dev/null
++++ b/lib/libutee/include/pta_blob.h
+@@ -0,0 +1,49 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_blob.h
++ *
++ * @brief   PTA Blob interface identification.
++ */
++#ifndef __PTA_BLOB_H__
++#define __PTA_BLOB_H__
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ */
++#define PTA_BLOB_PTA_UUID { \
++	0x229b29a9, 0x520, 0x4018, \
++	{0x87, 0xa9, 0xdf, 0xa0, 0xcb, 0x8b, 0x26, 0xd6} }
++
++/**
++ * @brief   PTA Command IDs
++ */
++enum PTA_BLOB_CMD {
++	PTA_BLOB_CMD_ENCAPS = 0, ///< Encapsulation
++	PTA_BLOB_CMD_DECAPS,     ///< Decapsulation
++};
++
++/**
++ * @brief   PTA Blob Type
++ *          Enumerate must be the same as the blob_Type defined in the
++ *          crypto_extension.h
++ */
++enum PTA_BLOB_TYPE {
++	PTA_BLOB_RED = 0,   ///< Red Blob mode   - data in plain text
++	PTA_BLOB_BLACK_ECB, ///< Black Blob mode - data encrypted in AES ECB
++	PTA_BLOB_BLACK_CCM, ///< Black Blod mode - data encrypted in AES CCM
++};
++
++/**
++ * @brief   Blob Key Modifier size in bytes
++ */
++#define PTA_BLOB_KEY_SIZE	16
++
++/**
++ * @brief   Blob PAD size in bytes (padding added to store recovering
++ *          blob key (32 bytes) and a blob MAC (16 bytes)
++ */
++#define PTA_BLOB_PAD_SIZE	 48
++
++#endif /* __PTA_BLOB_H__ */
+\ No newline at end of file
+diff --git a/lib/libutee/include/pta_ocotp.h b/lib/libutee/include/pta_ocotp.h
+new file mode 100644
+index 0000000..ab74055
+--- /dev/null
++++ b/lib/libutee/include/pta_ocotp.h
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_ocotp.h
++ *
++ * @brief   PTA OCOTP interface identification.
++ */
++#ifndef __PTA_OCOTP_H__
++#define __PTA_OCOTP_H__
++
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ */
++#define PTA_OCOTP_PTA_UUID { \
++	0x9abdf255, 0xd8fa, 0x40de, \
++	{0x8f, 0x60, 0x4d, 0x0b, 0x27, 0x92, 0x7b, 0x7d}}
++
++/**
++ * @brief   Get Chip Unique Id
++ */
++#define PTA_OCOTP_CMD_CHIP_UID 1
++
++
++#endif /* __PTA_OCOTP_H__ */
+--
+2.7.4
+
