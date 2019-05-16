@@ -17,7 +17,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-
+#include <inttypes.h>
 /* OpenSSL */
 #include <openssl/sha.h>
 #include <openssl/conf.h>
@@ -898,7 +898,7 @@ int main(int argc, char *argv[])
 		printf("Get Hardware Unique Id\n");
 		hwid = castauth_GetHwId();
 		if (hwid) {
-			printf("HWID: %08llx\n", hwid);
+			printf("HWID: %" PRIX64 "\n", hwid);
 			return STATUS_SUCCESS;
 		}
 		fprintf(stderr, "Error getting Hardware Id\n");

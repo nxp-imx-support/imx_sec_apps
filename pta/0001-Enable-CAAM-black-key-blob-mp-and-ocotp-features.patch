@@ -67,7 +67,7 @@ index 7dd1d7e..ff97f4c 100644
 @@ -468,6 +468,12 @@ CFG_IMX_WDOG ?= y
  $(call force,CFG_IMX_OCRAM,y)
  endif
- 
+
 +# i.MX8MM specific config
 +ifneq (,$(filter y, $(CFG_MX8MM)))
 +#CFG_IMX_MP ?= y
@@ -83,18 +83,18 @@ index e8b5aba..864ed21 100644
 +++ b/core/arch/arm/plat-imx/crypto_conf.mk
 @@ -36,6 +36,10 @@ $(call force, CFG_CRYPTO_GCM_HW,n)
  $(call force, CFG_CRYPTO_PKCS_HW,n)
- 
+
  $(call force, CFG_CRYPTO_BLOB_HW,y)
 +$(call force, CFG_BLOB_PTA,y)
 +
 +$(call force, CFG_CRYPTO_BK_HW,y)
 +$(call force, CFG_BK_PTA,y)
- 
+
  ifeq ($(filter y, $(CFG_MX6UL)$(CFG_MX7)$(CFG_MX8MM)$(CFG_MX8M)),y)
  # Definition of the Asymmetric Cipher supported by HW
 @@ -48,13 +52,21 @@ endif
  $(call force, CFG_CRYPTO_CMAC_HW,y)
- 
+
  #
 +# Force CFG_IMX_MP to n for platform not supported it
 +#
@@ -117,7 +117,7 @@ index e8b5aba..864ed21 100644
  CFG_MANUFACT_PROTEC_PTA ?= y
 @@ -88,4 +100,6 @@ $(call force, CFG_CRYPTO_AUTHENC_HW, $(call cryp-one-hw-enabled, CCM GCM))
  $(call force, CFG_CRYPTO_PK_HW, $(call cryp-one-hw-enabled, RSA ECC DH DSA))
- 
+
  $(call force, _CFG_CRYPTO_WITH_HUK, $(call cryp-one-hw-enabled, BLOB))
 +$(call force, _CFG_CRYPTO_WITH_BLOB, $(call cryp-one-hw-enabled, BLOB))
 +$(call force, _CFG_CRYPTO_WITH_BK, $(call cryp-one-hw-enabled, BK))
@@ -129,15 +129,15 @@ index 68d4728..70c1763 100644
 @@ -16,7 +16,7 @@
  /* Platform includes */
  #include <imx.h>
- 
+
 -static uint32_t die_id;
 +static uint64_t die_id;
- 
+
  /**
   * @brief   Read device Die Id
 @@ -34,12 +34,16 @@ int tee_otp_get_die_id(uint8_t *buffer, size_t len)
  		va = core_mmu_get_va(OCOTP_BASE, MEM_AREA_IO_SEC);
- 
+
  		/* Read Fuse shadow register containing the chip DIE ID */
 -		die_id = read32(va + OCOTP_DIE_ID);
 +		die_id = read32(va + OCOTP_UID_HIGH);
@@ -873,7 +873,7 @@ index f2e03f4..a260c93 100644
 +++ b/core/arch/arm/plat-imx/registers/ocotp-regs.h
 @@ -7,10 +7,11 @@
  #define __OCOTP_REGS_H__
- 
+
  #ifdef CFG_MX7ULP
 -#define OCOTP_WAFER_NO	0x04D0
 -#define OCOTP_DIE_ID	0x04E0
@@ -884,7 +884,7 @@ index f2e03f4..a260c93 100644
 +#define OCOTP_UID_HIGH  0x420
 +#define OCOTP_UID_LOW	0x410
  #endif
- 
+
  #endif /* __OCOTP_REGS_H__ */
 diff --git a/core/arch/arm/plat-imx/sub.mk b/core/arch/arm/plat-imx/sub.mk
 index 8652890..ad1a935 100644
@@ -897,7 +897,7 @@ index 8652890..ad1a935 100644
 -srcs-$(CFG_MANUFACT_PROTEC_PTA) += pta/pta_manufact_protec_mx.c
  srcs-$(CFG_XRDC) += xrdc.c
  subdirs-$(CFG_PSCI_ARM32) += pm
- 
+
  # Build the busfreq module
  subdirs-$(CFG_BUSFREQ) += busfreq
 +
@@ -954,7 +954,7 @@ index 92d2bdd..bec4593 100644
 +			0x5f, 0xcf, 0x8f, 0x7b, 0xca, 0x3e, 0xa3, 0x3b,
 +			0x4d, 0x7c, 0x60, 0xa5, 0xe6, 0x33, 0xe3, 0xe1
 +		};
- 
+
  /**
   * @brief   Speedups for prime searching
 @@ -100,86 +125,310 @@ static const char sqrt_value[] =
@@ -1331,15 +1331,15 @@ index 92d2bdd..bec4593 100644
 +	.length = 512
 +	}
  };
- 
+
  /**
 @@ -196,12 +445,12 @@ static void search_smallprime(size_t size, struct caambuf *prime)
  	size_t psize;
- 
+
  	for (idx = 0; idx < nbElem; idx++) {
 -		psize = strlen(smallprimes[idx]);
 +		psize = smallprimes[idx].length;
- 
+
  		if (psize == size) {
  			/* Found a predefined prime */
  			PRIME_TRACE("Found prime idx %d", idx);
@@ -1349,13 +1349,13 @@ index 92d2bdd..bec4593 100644
  			prime->paddr  = virt_to_phys(prime->data);
  			break;
 @@ -295,7 +544,8 @@ static enum CAAM_Status do_desc_setup(descPointer_t desc,
- 
+
  	PRIME_DUMPDESC(desc);
- 
+
 -	cache_operation(TEE_CACHECLEAN, (void *)sqrt_value, data->p->length);
 +	cache_operation(TEE_CACHECLEAN, (void *)sqrt_value,
 +		ARRAY_SIZE(sqrt_value));
- 
+
  	return CAAM_NO_ERROR;
  }
 diff --git a/core/drivers/caam/acipher/caam_rsa.c b/core/drivers/caam/acipher/caam_rsa.c
@@ -1376,7 +1376,7 @@ index 204ae6e..bf85633 100644
   */
 -#define RSA_PRIVATE_KEY_FORMAT  3
 +#define RSA_PRIVATE_KEY_FORMAT  1
- 
+
  static TEE_Result do_caam_encrypt(struct imxcrypt_rsa_ed *rsa_data,
  				descEntry_t operation);
 @@ -191,9 +190,12 @@ exit_conv:
@@ -1390,22 +1390,22 @@ index 204ae6e..bf85633 100644
 +	struct rsa_keypair *inkey;
 +	uint8_t *ptr_d;
 +	size_t size_d, idx_d;
- 
+
  #if (RSA_PRIVATE_KEY_FORMAT > 1)
  	size_t size_p, size_q;
 @@ -202,6 +204,8 @@ static enum CAAM_Status do_keypair_conv(struct caam_rsa_keypair *outkey,
  #endif
  #endif
- 
+
 +	inkey = key->key;
 +
  	RSA_TRACE("RSA Convert Keypair size N=%d",
  		crypto_bignum_num_bytes(inkey->n));
- 
+
 @@ -214,12 +218,32 @@ static enum CAAM_Status do_keypair_conv(struct caam_rsa_keypair *outkey,
  	crypto_bignum_bn2bin(inkey->n, outkey->n.data);
  	cache_operation(TEE_CACHECLEAN, outkey->n.data, outkey->n.length);
- 
+
 -	retstatus = caam_alloc_align_buf(&outkey->d,
 -					crypto_bignum_num_bytes(inkey->d));
 +/*
@@ -1422,7 +1422,7 @@ index 204ae6e..bf85633 100644
 +	retstatus = caam_alloc_align_buf(&outkey->d, size_d);
  	if (retstatus != CAAM_NO_ERROR)
  		goto exit_conv;
- 
+
 -	crypto_bignum_bn2bin(inkey->d, outkey->d.data);
 +	ptr_d = outkey->d.data;
 +	idx_d = 0;
@@ -1436,18 +1436,18 @@ index 204ae6e..bf85633 100644
 +	crypto_bignum_bn2bin(inkey->d, ptr_d + idx_d);
 +	RSA_DUMPBUF("D", outkey->d.data, outkey->d.length);
  	cache_operation(TEE_CACHECLEAN, outkey->d.data, outkey->d.length);
- 
+
  	outkey->format = 1;
 @@ -359,7 +383,8 @@ static TEE_Result do_allocate_keypair(struct rsa_keypair *key,
  		goto err_alloc_keypair;
- 
+
  	/* Allocate the Private Exponent [d = 1/e mod LCM(p-1, q-1)] */
 -	key->d = crypto_bignum_allocate(size_bits);
 +	/* Allocate 12 more bytes to fit CCM black key */
 +	key->d = crypto_bignum_allocate(size_bits + 96);
  	if (!key->d)
  		goto err_alloc_keypair;
- 
+
 @@ -1341,7 +1366,7 @@ static TEE_Result do_caam_decrypt(struct imxcrypt_rsa_ed *rsa_data,
  	 * Convert TEE rsa key type to CAAM rsa key type
  	 * Push key value to memory
@@ -1473,7 +1473,7 @@ index 204ae6e..bf85633 100644
  	case 1:
 @@ -1472,7 +1502,17 @@ static TEE_Result do_caam_decrypt(struct imxcrypt_rsa_ed *rsa_data,
  	}
- 
+
  	/* Set the Decryption operation type */
 -	desc[desclen++] = operation | PROT_RSA_DEC_KEYFORM(key.format);
 +	desc[desclen] = operation | PROT_RSA_DEC_KEYFORM(key.format);
@@ -1487,7 +1487,7 @@ index 204ae6e..bf85633 100644
 +#endif
 +
 +	desclen++;
- 
+
  	if (operation == RSA_DECRYPT(PKCS_V1_5)) {
  		/* Get the PPKCS1 v1.5 Message length generated */
 diff --git a/core/drivers/caam/caam_bk.c b/core/drivers/caam/caam_bk.c
@@ -1896,7 +1896,7 @@ index 2b99307..e8450fd 100644
  #include <libimxcrypt.h>
  #include <libimxcrypt_huk.h>
 +#include <libimxcrypt_blob.h>
- 
+
  /* Local includes */
  #include "common.h"
 @@ -33,10 +34,9 @@
@@ -1914,7 +1914,7 @@ index 2b99307..e8450fd 100644
  #define BLOB_TRACE(...)
 @@ -168,6 +168,230 @@ struct imxcrypt_huk driver_huk = {
  };
- 
+
  /**
 + * @brief
 + *   - Encapsulates input data to RED or BLACK blob.\n
@@ -2145,7 +2145,7 @@ index 2b99307..e8450fd 100644
   * @param[in] ctrl_addr   Controller base address
 @@ -180,8 +404,10 @@ enum CAAM_Status caam_blob_init(vaddr_t ctrl_addr __unused)
  	enum CAAM_Status retstatus = CAAM_FAILURE;
- 
+
  	/* Register the HUK Driver */
 -	if (imxcrypt_register(CRYPTO_HUK, &driver_huk) == 0)
 -		retstatus = CAAM_NO_ERROR;
@@ -2153,7 +2153,7 @@ index 2b99307..e8450fd 100644
 +		if (imxcrypt_register(CRYPTO_BLOB, &driver_blob) == 0)
 +			retstatus = CAAM_NO_ERROR;
 +	}
- 
+
  	return retstatus;
  }
 diff --git a/core/drivers/caam/caam_ctrl.c b/core/drivers/caam/caam_ctrl.c
@@ -2167,13 +2167,13 @@ index e94c0aa..dd822d8 100644
 +#ifdef CFG_CRYPTO_BK_HW
 +#include "caam_bk.h"
 +#endif
- 
+
  /* Utils includes */
  #include "utils_mem.h"
 @@ -168,6 +171,15 @@ static TEE_Result crypto_driver_init(void)
  	}
  #endif
- 
+
 +#ifdef CFG_CRYPTO_BK_HW
 +	/* Initialize the Black key Module */
 +	retstatus = caam_bk_init(jr_cfg.base);
@@ -2185,7 +2185,7 @@ index e94c0aa..dd822d8 100644
 +
  	/* Everything is OK, register the Power Management handler */
  	caam_pwr_init();
- 
+
 diff --git a/core/drivers/caam/caam_mp.c b/core/drivers/caam/caam_mp.c
 index b83a424..de33571 100644
 --- a/core/drivers/caam/caam_mp.c
@@ -2214,23 +2214,23 @@ index 322d9a5..20baad4 100644
 @@ -8,8 +8,8 @@
   *          Implementation of primitives to access HW
   */
- 
+
 -/* Global includes */
 -#include <io.h>
 +/* Local includes */
 +#include "caam_io.h"
- 
+
  #ifdef CFG_CRYPTO_HASH_HW
  /* Library i.MX includes */
 @@ -20,8 +20,15 @@
  #include "hal_ctrl.h"
- 
+
  /* Register includes */
 +#include "ctrl_regs.h"
 +
 +/* Register includes */
  #include "version_regs.h"
- 
+
 +#include <trace.h>
 +
 +#define CHECK_MPPRIVK
@@ -2241,19 +2241,19 @@ index 322d9a5..20baad4 100644
 @@ -33,7 +40,7 @@ uint8_t hal_ctrl_jrnum(vaddr_t baseaddr)
  {
  	uint32_t val;
- 
+
 -	val = read32(baseaddr + CHANUM_MS);
 +	val = get32(baseaddr + CHANUM_MS);
- 
+
  	return GET_CHANUM_MS_JRNUM(val);
  }
 @@ -52,11 +59,11 @@ int hal_ctrl_hash_limit(vaddr_t baseaddr)
  	uint32_t val;
- 
+
  	/* Read the number of instance */
 -	val = read32(baseaddr + CHANUM_LS);
 +	val = get32(baseaddr + CHANUM_LS);
- 
+
  	if (GET_CHANUM_LS_MDNUM(val)) {
  		/* Hashing is supported */
 -		val = read32(baseaddr + CHAVID_LS);
@@ -2263,24 +2263,24 @@ index 322d9a5..20baad4 100644
  			return HASH_SHA256;
 @@ -81,7 +88,7 @@ bool hal_ctrl_splitkey(vaddr_t baseaddr)
  	uint32_t val;
- 
+
  	/* Read the number of instance */
 -	val = read32(baseaddr + CAAMVID_MS);
 +	val = get32(baseaddr + CAAMVID_MS);
- 
+
  	if (GET_CAAMVID_MS_MAJ_REV(val) < 3) {
  		return false;
 @@ -104,9 +111,146 @@ uint8_t hal_ctrl_caam_era(vaddr_t baseaddr)
  	uint32_t val;
- 
+
  	/* Read the number of instance */
 -	val = read32(baseaddr + CCBVID);
 +	val = get32(baseaddr + CCBVID);
- 
+
  	return GET_CCBVID_CAAM_ERA(val);
  }
  #endif
- 
+
 +#ifdef CFG_CRYPTO_MP_HW
 +
 +/**
@@ -2424,7 +2424,7 @@ index ae7fdbb..9457ad3 100644
 --- a/core/drivers/caam/hal/imx_6_7/hal_ctrl.c
 +++ b/core/drivers/caam/hal/imx_6_7/hal_ctrl.c
 @@ -61,141 +61,3 @@ void hal_ctrl_init(vaddr_t baseaddr)
- 
+
  	caam_pwr_add_backup(baseaddr, ctrl_backup, ARRAY_SIZE(ctrl_backup));
  }
 -
@@ -2572,7 +2572,7 @@ index e22cd05..e373494 100644
 @@ -31,5 +31,14 @@
  #define JRxDID_MS_PRIM_TZ			BIT32(4)
  #define JRxDID_MS_PRIM_DID(val)		SHIFT_U32((val & 0xF), 0)
- 
+
 +/* Security Configuration */
 +#define SCFGR					0x000C
 +#define BM_SCFGR_MPCURVE		SHIFT_U32(0xF, 28)
@@ -2583,7 +2583,7 @@ index e22cd05..e373494 100644
 +#define MPMR_NB_REG             0x20
 +
  #endif /* __CTRL_REGS_H__ */
- 
+
 diff --git a/core/drivers/caam/include/caam_bk.h b/core/drivers/caam/include/caam_bk.h
 new file mode 100644
 index 0000000..bd627fa
@@ -2621,7 +2621,7 @@ index aa2bb04..defa22f 100644
 +++ b/core/drivers/caam/include/caam_blob.h
 @@ -13,15 +13,6 @@
  #include <tee_api_types.h>
- 
+
  /**
 - * @brief   Blob Key Modifier size in bytes
 - */
@@ -2704,7 +2704,7 @@ index bd090a4..a9b5d68 100644
 @@ -324,6 +324,13 @@
  #define PROT_RSA_KEY_ALL		0
  #define PROT_RSA_KEY_N_D		2
- 
+
 +/* RSA black key */
 +#define PROT_RSA_KEY_TYPE(type) SHIFT_U32(PROT_RSA_KEY_##type, 8)
 +#define PROT_RSA_KEY_RED		0
@@ -2729,19 +2729,19 @@ index bd090a4..a9b5d68 100644
 +#define PROT_BLOB_AES_ECB			0
 +#define PROT_BLOB_FORMAT(format)	SHIFT_U32(0, PROT_BLOB_FORMAT_##format)
 +#define PROT_BLOB_FORMAT_NORMAL		0
- 
+
  /*
   * Algorithm Identifier
 @@ -518,13 +535,13 @@
  #define MATHI_IMM_VALUE(val)	SHIFT_U32((val & 0xFF), 4)
- 
+
  /*
 - * Sequence Output
 + * Sequence Input/Output
   */
 +#define CMD_SEQ_IN_TYPE			CMD_TYPE(0x1E)
  #define CMD_SEQ_OUT_TYPE		CMD_TYPE(0x1F)
- 
+
  /* Length */
 -#define SEQ_OUT_LENGTH(len)		SHIFT_U32((len & 0xFFFF), 0)
 -
@@ -2752,7 +2752,7 @@ index bd090a4..a9b5d68 100644
 @@ -630,6 +647,10 @@
  /* ECC Domain Selection */
  #define PDB_ECC_ECDSEL(curve)		SHIFT_U32((curve & 0x3F), 7)
- 
+
 +/* Black key padding */
 +#define BLACK_KEY_NONCE_SIZE		6
 +#define BLACK_KEY_ICV_SIZE			6
@@ -2766,7 +2766,7 @@ index 71f2371..2406400 100644
 +++ b/core/drivers/caam/include/desc_helper.h
 @@ -476,10 +476,42 @@ static inline void dump_desc(void *desc)
  			PROT_BLOB_FMT_MSTR)
- 
+
  /**
 + * @brief   Blob encapsulation
 + */
@@ -2805,9 +2805,9 @@ index 71f2371..2406400 100644
  #define SEQ_OUT_PTR(len) \
 -			(CMD_SEQ_OUT_TYPE | SEQ_OUT_LENGTH(len))
 +			(CMD_SEQ_OUT_TYPE | SEQ_LENGTH(len))
- 
+
  #endif /* __DESC_HELPER_H__ */
- 
+
 diff --git a/core/drivers/caam/sub.mk b/core/drivers/caam/sub.mk
 index 78c357d..d94ffce 100644
 --- a/core/drivers/caam/sub.mk
@@ -2819,7 +2819,7 @@ index 78c357d..d94ffce 100644
 +srcs-$(CFG_CRYPTO_BK_HW)        += caam_bk.c
  subdirs-$(CFG_CRYPTO_CIPHER_HW) += cipher
  subdirs-$(CFG_CRYPTO_PK_HW)     += acipher
- 
+
 diff --git a/core/lib/libimxcrypt/crypto_api/bk/bk.c b/core/lib/libimxcrypt/crypto_api/bk/bk.c
 new file mode 100644
 index 0000000..3fac905
@@ -3246,7 +3246,7 @@ index 42b19f1..4266121 100644
 @@ -13,6 +13,7 @@
  #include <tee_api_types.h>
  #include <libimxcrypt.h>
- 
+
 +#ifdef _CFG_CRYPTO_WITH_MP
  /**
   * @brief   MP Signature Curve enumerate
@@ -3256,7 +3256,7 @@ index 42b19f1..4266121 100644
   */
  TEE_Result crypto_generate_huk(struct imxcrypt_buf *huk);
 +#endif // _CFG_CRYPTO_WITH_MP
- 
+
 -#endif /* __CRYPTO_EXTENSION_H */
 +#ifdef _CFG_CRYPTO_WITH_BLOB
 +/**
@@ -3368,11 +3368,11 @@ index f9c957b..f4e4941 100644
 +	CRYPTO_BK,           ///< Key Encapsulation operation driver
 +	CRYPTO_MAX_ALGO      ///< Maximum number of algo supported
  };
- 
+
  /**
 @@ -43,6 +45,60 @@ struct imxcrypt_buf {
  };
- 
+
  /**
 + * @brief Blob encryption type
 + */
@@ -3434,7 +3434,7 @@ index f9c957b..f4e4941 100644
 @@ -89,4 +145,4 @@ TEE_Result imxcrypt_libsoft_init(void);
   */
  TEE_Result crypto_driver_init(void);
- 
+
 -#endif /* __LIBIMXCRYPT_H__ */
 +#endif /* __LIBIMXCRYPT_H__ */
 \ No newline at end of file
@@ -3451,7 +3451,7 @@ index e2a1484..f3f7cdb 100644
 +	uint32_t   bk_type; ///< Type of black key if is_black is true
 +#endif
  };
- 
+
  /**
 diff --git a/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_bk.h b/core/lib/libimxcrypt/crypto_api/include/libimxcrypt_bk.h
 new file mode 100644
@@ -3565,11 +3565,11 @@ index 2f5f636..d3c6e8e 100644
 @@ -53,6 +53,8 @@
  #define MBEDTLS_PEM_PARSE_C
  #define MBEDTLS_PEM_WRITE_C
- 
+
 +#define MBEDTLS_CCM_C
 +
  #include <mbedtls/check_config.h>
- 
+
  #endif /* __MBEDTLS_CONFIG_UTA_H */
 diff --git a/lib/libutee/include/pta_bk.h b/lib/libutee/include/pta_bk.h
 new file mode 100644
@@ -3704,6 +3704,6 @@ index 0000000..7ed86b9
 +
 +
 +#endif /* __PTA_OCOTP_H__ */
--- 
+--
 2.7.4
 

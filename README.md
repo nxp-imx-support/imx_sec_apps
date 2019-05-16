@@ -1,4 +1,5 @@
 
+
 # NXP Cast Authentication Library
 
 ## Introduction
@@ -30,6 +31,11 @@ Details and build instructions for each component are described in the following
 
 
 ##  Changelog
+
+**Version 2.1 (2019-05-16)**
+
+- Sign using black key, blob is no longer used for signing
+- Session opening/termination on each CA-TA request 
 
 **Version 2.0 (2019-05-14)**
 
