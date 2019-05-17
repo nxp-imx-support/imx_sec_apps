@@ -182,7 +182,7 @@ const uint8_t SUBJECT_KEY_ID_PLACEHOLDER[] = {
 
 /** @brief  Model certificate public modulus, length: 257  */
 const uint8_t PUBLIC_MODULUS_PLACEHOLDER[] = {
-  		0x00, 0xd5, 0x96, 0x0d, 0x7e, 0xa7, 0x91, 0x70,
+		0x00, 0xd5, 0x96, 0x0d, 0x7e, 0xa7, 0x91, 0x70,
 		0x0e, 0xe9, 0xf6, 0x4c, 0xb1, 0x7b, 0x91, 0xe6,
 		0x6f, 0x47, 0xa3, 0xe8, 0xa7, 0x9c, 0xac, 0x05,
 		0xea, 0x39, 0x3b, 0x9c, 0x35, 0xd4, 0xa4, 0x92,
@@ -776,7 +776,6 @@ static TEE_Result castauth_GenDevKeyCert(
 	char *public_key = NULL;
 	char *private_key = NULL;
 	char *black_key = NULL;
-	char *blob_key = NULL;
 	uint32_t keysize = MAX_KEY_PEM_SIZE;
 	char hwid_str[21] = {0};
 	char hwid_hex[17] = {0};
@@ -839,7 +838,7 @@ static TEE_Result castauth_GenDevKeyCert(
 		res = TEE_ERROR_BAD_FORMAT;
 		goto out;
 	}
- 
+
 	/* Allocate memory for public key */
 	public_key = TEE_Malloc(keysize, 0);
 	if (!public_key) {
@@ -861,13 +860,6 @@ static TEE_Result castauth_GenDevKeyCert(
 		return TEE_ERROR_OUT_OF_MEMORY;
 	}
 
-	/* Allocate memory for blob key */
-	blob_key = TEE_Malloc(keysize, 0);
-	if (!blob_key) {
-		CAST_TRACE("Out of memory");
-		return TEE_ERROR_OUT_OF_MEMORY;
-	}
-
 	/* 2. Generate device-specific wrapping key */
 	/* 3. Generate RSA private key */
 	res = castauth_GenKeyPair(private_key, keysize, public_key, keysize);
@@ -882,12 +874,6 @@ static TEE_Result castauth_GenDevKeyCert(
 		goto out;
 	}
 
-	/* Export the key */
-	res = castauth_BlobKey(blob_encap, black_key, blob_key, keysize);
-	if (res != TEE_SUCCESS) {
-		CAST_TRACE("Error exporting black key");
-		goto out;
-	}
 	/* Read the RSA public key */
 	if (mbedtls_pk_parse_public_key(&pk, (uint8_t *)public_key,
 	strlen(public_key) + 1) != 0) {
@@ -1034,7 +1020,7 @@ static TEE_Result castauth_GenDevKeyCert(
 	memcpy(inout_cert, certw, inout_cert_len);
 
 	/* Return the device key to the caller */
-	memcpy(device_key, blob_key, strlen(blob_key));
+	memcpy(device_key, black_key, strlen(black_key));
 
 out:
 	if (public_key)
@@ -1043,8 +1029,6 @@ out:
 		TEE_Free(private_key);
 	if (black_key)
 		TEE_Free(black_key);
-	if (blob_key)
-		TEE_Free(blob_key);
 	if (certw)
 		TEE_Free(certw);
 	if (modulus)
@@ -1518,7 +1502,7 @@ static TEE_Result pem_to_rsa_attr(const char *key_pem,
 		goto out;
 	}
 
-	/* 
+	/*
 	 * Remove leading zeros when using plain keys and keep them
 	 * when using black keys (CCM)
 	 */
