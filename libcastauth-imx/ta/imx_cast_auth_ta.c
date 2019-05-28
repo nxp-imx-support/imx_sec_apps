@@ -54,9 +54,9 @@
  */
 #define CAST_DEBUG
 #ifdef CAST_DEBUG
-#define CAST_TRACE		EMSG
+#define CAST_TRACE EMSG
 #else
-#define CAST_TRACE(...)
+#define CAST_TRACE (...)
 #endif
 
 #define CAST_AUTH_KEY_SIZE 256
@@ -91,35 +91,47 @@
  *  }
  */
 
-#define WRAPPED_KEY_DER_MAX_BYTES 22 + \
+#define WRAPPED_KEY_DER_MAX_BYTES (22 + \
 	KEY_INTEGRITY_BYTES + \
 	KEY_BLOB_BYTES + \
-	3 * MBEDTLS_MPI_MAX_SIZE
+	3 * MBEDTLS_MPI_MAX_SIZE)
 
 #define MAX_KEY_PEM_SIZE 4096
 
+/* Round up the even multiple of size, size has to be a multiple of 2 */
+#define ROUNDUP(v, size) (((v) + (size - 1)) & ~(size - 1))
+
+#define PAD_16_BYTE(_key_size) (ROUNDUP(_key_size, 16))
+#define ECB_BLACK_KEY_SIZE(_key_size) (PAD_16_BYTE(_key_size))
+#define PAD_8_BYTE(_key_size) (ROUNDUP(_key_size, 8))
+#define NONCE_SIZE 6
+#define IV_SIZE 6
+#define CCM_OVERHEAD (NONCE_SIZE + IV_SIZE)
+#define CCM_BLACK_KEY_SIZE(_key_size) (PAD_8_BYTE(_key_size) \
+	+ CCM_OVERHEAD)
+
 const uint8_t cast_pubexp[3] = {0x01, 0x00, 0x01};
 
-typedef enum {
+enum key_class_t {
 	KEY_CLASS_PLAIN = 0, KEY_CLASS_BLACK, KEY_CLASS_BLOB, KEY_CLASS_ALL
-} key_class_t;
+};
 
-typedef struct {
+struct pem_anchor_t {
 	const char *begin;
 	const char *end;
-} pem_anchor_t;
+};
 
-typedef struct {
-	key_class_t key_class;
-	pem_anchor_t pem_anchor;
-} key_class_pem_t;
+struct key_class_pem_t {
+	enum key_class_t key_class;
+	struct pem_anchor_t pem_anchor;
+};
 
 #define KEY_CLASS_PEM(CNAME) \
 	{KEY_CLASS_ ## CNAME, \
 	{PEM_BEGIN_PRIVATE_KEY_ ## CNAME, PEM_END_PRIVATE_KEY_ ## CNAME} }
 
 /* CAAM built-in curves with data */
-static const key_class_pem_t key_class_pem[] = {KEY_CLASS_PEM(PLAIN),
+static const struct key_class_pem_t key_class_pem[] = {KEY_CLASS_PEM(PLAIN),
 		KEY_CLASS_PEM(BLACK), KEY_CLASS_PEM(BLOB), {0, {0, 0} }, };
 
 struct dbuf {
@@ -136,69 +148,96 @@ struct rsa_attributes {
 	struct dbuf n;
 };
 
-typedef enum {
+enum blob_op_t {
 	blob_encap = 0, blob_decap,
-} blob_op_t;
+};
 
 /** @brief  Model certificate serial number, length: 20  */
-const uint8_t CERT_SERIAL_NUMBER_PLACEHOLDER[] = {0x3c, 0x43, 0x45, 0x52, 0x54,
-		0x20, 0x53, 0x45, 0x52, 0x49, 0x41, 0x4c, 0x20, 0x4e, 0x55,
-		0x4d, 0x42, 0x45, 0x52, 0x3e};
+const uint8_t CERT_SERIAL_NUMBER_PLACEHOLDER[] = {
+		0x3c, 0x43, 0x45, 0x52, 0x54, 0x20, 0x53, 0x45,
+		0x52, 0x49, 0x41, 0x4c, 0x20, 0x4e, 0x55, 0x4d,
+		0x42, 0x45, 0x52, 0x3e
+	};
 
 /** @brief  Model certificate unique hardware Id, length: 20  */
-const uint8_t HARDWARE_ID_PLACEHOLDER[] = {0x3c, 0x55, 0x4e, 0x49, 0x51, 0x55,
-		0x45, 0x20, 0x48, 0x41, 0x52, 0x44, 0x57, 0x41, 0x52, 0x45,
-		0x20, 0x49, 0x44, 0x3e};
+const uint8_t HARDWARE_ID_PLACEHOLDER[] = {
+		0x3c, 0x55, 0x4e, 0x49, 0x51, 0x55, 0x45, 0x20,
+		0x48, 0x41, 0x52, 0x44, 0x57, 0x41, 0x52, 0x45,
+		0x20, 0x49, 0x44, 0x3e
+	};
 
 /** @brief  Model certificate BSS Id, length: 17  */
-const uint8_t MAC_ADDRESS_PLACEHOLDER[] = {0x41, 0x41, 0x3a, 0x42, 0x42, 0x3a,
-		0x43, 0x43, 0x3a, 0x44, 0x44, 0x3a, 0x45, 0x45, 0x3a, 0x46,
-		0x46};
+const uint8_t MAC_ADDRESS_PLACEHOLDER[] = {
+		0x41, 0x41, 0x3a, 0x42, 0x42, 0x3a, 0x43, 0x43,
+		0x3a, 0x44, 0x44, 0x3a, 0x45, 0x45, 0x3a, 0x46,
+		0x46
+	};
 
 /** @brief  Model certificate subject key Id, length: 20  */
-const uint8_t SUBJECT_KEY_ID_PLACEHOLDER[] = {0x4d, 0x3c, 0x82, 0xf5, 0x2f,
-		0x39, 0x95, 0xaf, 0x03, 0xe4, 0x96, 0x51, 0x43, 0x62, 0x7d,
-		0x5d, 0x7a, 0x60, 0xa1, 0x20};
+const uint8_t SUBJECT_KEY_ID_PLACEHOLDER[] = {
+		0x4d, 0x3c, 0x82, 0xf5, 0x2f, 0x39, 0x95, 0xaf,
+		0x03, 0xe4, 0x96, 0x51, 0x43, 0x62, 0x7d, 0x5d,
+		0x7a, 0x60, 0xa1, 0x20
+	};
 
 /** @brief  Model certificate public modulus, length: 257  */
-const uint8_t PUBLIC_MODULUS_PLACEHOLDER[] = {0x00, 0xd5, 0x96, 0x0d, 0x7e,
-		0xa7, 0x91, 0x70, 0x0e, 0xe9, 0xf6, 0x4c, 0xb1, 0x7b, 0x91,
-		0xe6, 0x6f, 0x47, 0xa3, 0xe8, 0xa7, 0x9c, 0xac, 0x05, 0xea,
-		0x39, 0x3b, 0x9c, 0x35, 0xd4, 0xa4, 0x92, 0x5a, 0xe4, 0x1c,
-		0x03, 0xa1, 0x52, 0x70, 0xf8, 0x68, 0xb3, 0x99, 0x70, 0x4f,
-		0x9f, 0x7b, 0x36, 0x7c, 0x86, 0x25, 0x94, 0xc4, 0x9e, 0x12,
-		0x1f, 0x66, 0xfe, 0x1b, 0x26, 0xb3, 0x73, 0x05, 0x64, 0xab,
-		0x8a, 0x62, 0xea, 0xc1, 0x0b, 0xb0, 0x9e, 0xfb, 0x3a, 0x4b,
-		0x2e, 0x81, 0x6f, 0x4d, 0xce, 0x7b, 0xc8, 0x08, 0x84, 0xd0,
-		0x03, 0x08, 0xab, 0xdd, 0x1d, 0xf2, 0x65, 0x05, 0x89, 0xf0,
-		0x7f, 0x9b, 0x05, 0x16, 0xf5, 0x2a, 0x0b, 0xc5, 0x53, 0x43,
-		0x9d, 0x35, 0xe1, 0x59, 0x7a, 0xaf, 0x17, 0x5e, 0xe7, 0x95,
-		0xbf, 0x65, 0x8d, 0x26, 0x1d, 0x93, 0x59, 0x0a, 0xdb, 0xaa,
-		0x6b, 0x8c, 0xd2, 0xea, 0xba, 0x54, 0xb3, 0x7e, 0x77, 0x7f,
-		0x5a, 0xce, 0x6b, 0xa8, 0x5a, 0x43, 0x66, 0x0e, 0x6e, 0x18,
-		0x43, 0x60, 0x0a, 0x58, 0x15, 0xb7, 0xee, 0xc7, 0x12, 0x91,
-		0x6c, 0x23, 0xd4, 0xa9, 0xab, 0xe9, 0xc2, 0xf9, 0x3b, 0x45,
-		0xd8, 0x79, 0x9a, 0x7b, 0xed, 0xa5, 0xd7, 0x86, 0xa9, 0x6c,
-		0x07, 0x1e, 0x7d, 0xfe, 0xa6, 0x9a, 0xa7, 0xbe, 0xc8, 0x16,
-		0xe5, 0xa9, 0xb3, 0xa1, 0x6e, 0x8f, 0xad, 0x74, 0xb8, 0x75,
-		0x30, 0x76, 0x90, 0x04, 0x89, 0x48, 0x17, 0x8b, 0xd7, 0x50,
-		0xf1, 0xb8, 0xba, 0xce, 0x3a, 0x07, 0x73, 0x86, 0x29, 0x4d,
-		0x58, 0x6f, 0x78, 0xb8, 0xed, 0x44, 0xc5, 0xf0, 0x74, 0x15,
-		0xb3, 0x79, 0xe1, 0xf5, 0xae, 0x78, 0x31, 0xcf, 0x61, 0x1e,
-		0x44, 0xa3, 0x22, 0xb8, 0x87, 0x8c, 0x1c, 0x66, 0x99, 0x9c,
-		0x93, 0x1d, 0x41, 0x87, 0xfa, 0xd2, 0x49, 0x73, 0xcb, 0x55,
-		0x0d, 0x1d};
+const uint8_t PUBLIC_MODULUS_PLACEHOLDER[] = {
+		0x00, 0xd5, 0x96, 0x0d, 0x7e, 0xa7, 0x91, 0x70,
+		0x0e, 0xe9, 0xf6, 0x4c, 0xb1, 0x7b, 0x91, 0xe6,
+		0x6f, 0x47, 0xa3, 0xe8, 0xa7, 0x9c, 0xac, 0x05,
+		0xea, 0x39, 0x3b, 0x9c, 0x35, 0xd4, 0xa4, 0x92,
+		0x5a, 0xe4, 0x1c, 0x03, 0xa1, 0x52, 0x70, 0xf8,
+		0x68, 0xb3, 0x99, 0x70, 0x4f, 0x9f, 0x7b, 0x36,
+		0x7c, 0x86, 0x25, 0x94, 0xc4, 0x9e, 0x12, 0x1f,
+		0x66, 0xfe, 0x1b, 0x26, 0xb3, 0x73, 0x05, 0x64,
+		0xab, 0x8a, 0x62, 0xea, 0xc1, 0x0b, 0xb0, 0x9e,
+		0xfb, 0x3a, 0x4b, 0x2e, 0x81, 0x6f, 0x4d, 0xce,
+		0x7b, 0xc8, 0x08, 0x84, 0xd0, 0x03, 0x08, 0xab,
+		0xdd, 0x1d, 0xf2, 0x65, 0x05, 0x89, 0xf0, 0x7f,
+		0x9b, 0x05, 0x16, 0xf5, 0x2a, 0x0b, 0xc5, 0x53,
+		0x43, 0x9d, 0x35, 0xe1, 0x59, 0x7a, 0xaf, 0x17,
+		0x5e, 0xe7, 0x95, 0xbf, 0x65, 0x8d, 0x26, 0x1d,
+		0x93, 0x59, 0x0a, 0xdb, 0xaa, 0x6b, 0x8c, 0xd2,
+		0xea, 0xba, 0x54, 0xb3, 0x7e, 0x77, 0x7f, 0x5a,
+		0xce, 0x6b, 0xa8, 0x5a, 0x43, 0x66, 0x0e, 0x6e,
+		0x18, 0x43, 0x60, 0x0a, 0x58, 0x15, 0xb7, 0xee,
+		0xc7, 0x12, 0x91, 0x6c, 0x23, 0xd4, 0xa9, 0xab,
+		0xe9, 0xc2, 0xf9, 0x3b, 0x45, 0xd8, 0x79, 0x9a,
+		0x7b, 0xed, 0xa5, 0xd7, 0x86, 0xa9, 0x6c, 0x07,
+		0x1e, 0x7d, 0xfe, 0xa6, 0x9a, 0xa7, 0xbe, 0xc8,
+		0x16, 0xe5, 0xa9, 0xb3, 0xa1, 0x6e, 0x8f, 0xad,
+		0x74, 0xb8, 0x75, 0x30, 0x76, 0x90, 0x04, 0x89,
+		0x48, 0x17, 0x8b, 0xd7, 0x50, 0xf1, 0xb8, 0xba,
+		0xce, 0x3a, 0x07, 0x73, 0x86, 0x29, 0x4d, 0x58,
+		0x6f, 0x78, 0xb8, 0xed, 0x44, 0xc5, 0xf0, 0x74,
+		0x15, 0xb3, 0x79, 0xe1, 0xf5, 0xae, 0x78, 0x31,
+		0xcf, 0x61, 0x1e, 0x44, 0xa3, 0x22, 0xb8, 0x87,
+		0x8c, 0x1c, 0x66, 0x99, 0x9c, 0x93, 0x1d, 0x41,
+		0x87, 0xfa, 0xd2, 0x49, 0x73, 0xcb, 0x55, 0x0d,
+		0x1d
+	};
 
 const size_t CERT_PREFIX_BYTES = 4;
 const size_t CERT_SUFFIX_BYTES = 276;
 const size_t CERT_PUBMOD_PREFIX_BYTES = 8;
 const size_t CERT_PUBMOD_SUFFIX_BYTES = 5;
 
-const unsigned char SHA256_HASH_PREFIX[] = {0x30, 0x31, 0x30, 0x0d, 0x06, 0x09,
-		0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
-		0x00, 0x04, 0x20};
+const unsigned char SHA256_HASH_PREFIX[] = {
+		0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+		0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+		0x00, 0x04, 0x20
+	};
 
 char *sp; /* the start position of the string used by strtok */
+
+struct tee_attr_packed {
+	uint32_t attr_id;
+	uint32_t a;
+	uint32_t b;
+};
+
+const uint32_t CAST_AUTH_BLOB_TYPE = PTA_BLOB_BLACK_CCM;
+const uint32_t CAST_AUTH_KEY_TYPE = PTA_BK_CCM;
 
 /* prototypes */
 
@@ -211,21 +250,20 @@ static char *strtok1(char *str, const char *delimiters);
 static TEE_Result castauth_GenKeyPair(char *private_key,
 		uint32_t private_key_len, char *public_key,
 		uint32_t public_key_len);
-static TEE_Result castauth_SignHash(const char *in_wprivkey_pem,
-		uint8_t *hash, uint32_t hash_len,
+static TEE_Result castauth_SignHash(const char *key_pem,
+		const uint8_t *hash, uint32_t hash_len,
 		uint8_t *outsig, uint32_t outsig_len);
-static TEE_Result castauth_WrapKey(char *key_pem, char *wkey_pem);
+static TEE_Result castauth_WrapKey(const char *inkey, char *outkey,
+		uint32_t outkey_sz);
 static TEE_Result castauth_add_pkcs1_type1_padding(uint8_t *to,
 		unsigned int tlen, const uint8_t *from,
 		unsigned int flen);
-static TEE_Result castauth_BlobKey(blob_op_t blob_op, const char *in_key,
-		char *out_key);
+static TEE_Result castauth_BlobKey(enum blob_op_t blob_op, const char *in_key,
+		char *out_key, uint32_t out_key_sz);
 static TEE_Result pem_to_rsa_attr(const char *key_pem,
-		struct rsa_attributes *rsa_attrs, key_class_t key_class);
-static TEE_Result castauth_WriteKeyPem(mbedtls_pk_context *key, char *buf,
-		size_t size, key_class_t key_class);
-static TEE_Result rsa_attr_to_pem(struct rsa_attributes *rsa_attrs,
-		char *outpem, key_class_t key_class);
+		struct rsa_attributes *rsa_attrs, enum key_class_t key_class);
+static TEE_Result rsa_attr_to_pem(const struct rsa_attributes *rsa_attrs,
+		char *outpem, uint32_t outpem_sz, enum key_class_t key_class);
 static TEE_Result castauth_VerifyCertSignature(const uint8_t *cert,
 		uint32_t cert_len, const char *model_key,
 		uint32_t model_key_len __maybe_unused);
@@ -235,13 +273,221 @@ static TEE_Result castauth_GenDevKeyCert(
 		uint8_t *inout_cert, uint32_t inout_cert_len,
 		char *out_dev_key, uint32_t out_dev_keylen __maybe_unused
 );
-static TEE_Result castauth_ProvKey(const char *ekey_pem, char *blob_pem,
+static TEE_Result castauth_ProvKey(const char *enc_key, char *blob_pem,
 		uint32_t blob_pem_len);
 static TEE_Result castauth_mp_pubkey(unsigned char *mp_pubkey,
 		uint32_t mp_pubkey_len);
 static TEE_Result castauth_MPPubKey(unsigned char *mp_pubkey_pem,
 		uint32_t mp_pubkey_pem_len);
 static TEE_Result castauth_GetHwId(uint8_t *hwid, uint32_t hwid_len);
+static TEE_Result pack_attrs(const TEE_Attribute *attrs, uint32_t attr_count,
+		      uint8_t **buf, size_t *blen);
+static void add_attr(size_t *attr_count, TEE_Attribute *attrs,
+			uint32_t attr_id, const void *buf, size_t len);
+static int rsa_attr_to_der(const struct rsa_attributes *rsa,
+	unsigned char *buf, size_t size);
+
+
+/**
+ * @brief   Add attribute to TEE attribute struct
+ *
+ * @param[in,out]  attr_count  Attributes count
+ * @param[in,out]  attrs       Target attributes struct
+ * @param[in]      attr_id     Attribute identifier
+ * @param[in]      buf         Attribute value
+ * @param[in]      len         Attribute value length
+ *
+ * @retval TEE_SUCCESS                Success
+ * @retval TEE_ERROR_OUT_OF_MEMORY    Can't allocate memory for one object
+ */
+static void add_attr(size_t *attr_count, TEE_Attribute *attrs,
+uint32_t attr_id, const void *buf, size_t len)
+{
+	attrs[*attr_count].attributeID = attr_id;
+	attrs[*attr_count].content.ref.buffer = (void *)buf;
+	attrs[*attr_count].content.ref.length = len;
+	(*attr_count)++;
+}
+
+/**
+ * @brief   Serialize TEE attributes into a byte array
+ *
+ * @param[in]  attrs        RSA key attributes
+ * @param[in]  attr_count   Attributes count
+ * @param[out] buf          Output buffer
+ * @param[out] blen         Output buffer size
+ *
+ * @retval TEE_SUCCESS                Success
+ * @retval TEE_ERROR_OUT_OF_MEMORY    Can't allocate memory for one object
+ */
+static TEE_Result pack_attrs(const TEE_Attribute *attrs,
+uint32_t attr_count, uint8_t **buf, size_t *blen)
+{
+	struct tee_attr_packed *a;
+	uint8_t *b;
+	size_t bl;
+	size_t n;
+
+	*buf = NULL;
+	*blen = 0;
+	if (attr_count == 0)
+		return TEE_SUCCESS;
+
+	bl = sizeof(uint32_t) + sizeof(struct tee_attr_packed) * attr_count;
+	for (n = 0; n < attr_count; n++) {
+		if ((attrs[n].attributeID & TEE_ATTR_BIT_VALUE) != 0)
+			continue; /* Only memrefs need to be updated */
+
+		if (!attrs[n].content.ref.buffer)
+			continue;
+
+		/* Make room for padding */
+		bl += ROUNDUP(attrs[n].content.ref.length, 4);
+	}
+
+	//b = calloc(1, bl);
+	b = memalign(4096, bl);
+	if (!b)
+		return TEE_ERROR_OUT_OF_MEMORY;
+	memset(b, 0, sizeof(bl));
+
+	*buf = b;
+	*blen = bl;
+
+	*(uint32_t *)(void *)b = attr_count;
+	b += sizeof(uint32_t);
+	a = (struct tee_attr_packed *)(void *)b;
+	b += sizeof(struct tee_attr_packed) * attr_count;
+
+	for (n = 0; n < attr_count; n++) {
+		a[n].attr_id = attrs[n].attributeID;
+		if (attrs[n].attributeID & TEE_ATTR_BIT_VALUE) {
+			a[n].a = attrs[n].content.value.a;
+			a[n].b = attrs[n].content.value.b;
+			continue;
+		}
+
+		a[n].b = attrs[n].content.ref.length;
+
+		if (!attrs[n].content.ref.buffer) {
+			a[n].a = 0;
+			continue;
+		}
+
+		memcpy(b, attrs[n].content.ref.buffer,
+		       attrs[n].content.ref.length);
+
+		/* Make buffer pointer relative to *buf */
+		a[n].a = (uint32_t)(uintptr_t)(b - *buf);
+
+		/* Round up to good alignment */
+		b += ROUNDUP(attrs[n].content.ref.length, 4);
+	}
+
+	return TEE_SUCCESS;
+}
+
+/**
+ * @brief   Convert RSA key attributes as byte array to DER
+ *			Preserve leading zeros for CCM-blacken keys
+ *
+ * @param[in]      rsa   RSA key attributes
+ * @param[in,out]  buf   Output DER buffer
+ * @param[in]	   size  DER buffer size
+ *
+ * @retval Written buffer size, negative if error
+ */
+static int rsa_attr_to_der(const struct rsa_attributes *rsa,
+	unsigned char *buf, size_t size)
+{
+	int ret;
+	unsigned char *c;
+	size_t len = 0;
+
+	if ((!rsa) || (!buf) || (size == 0))
+		return -1;
+
+	c = buf + size;
+
+	/*
+	 * Export the parameters one after another to avoid simultaneous copies.
+	 */
+
+  /* Export QP */
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_raw_buffer(&c, buf, NULL,  0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_len(&c, buf, 0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_INTEGER));
+
+  /* Export DQ */
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_raw_buffer(&c, buf, NULL,  0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_len(&c, buf, 0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_INTEGER));
+
+	/* Export DP */
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_raw_buffer(&c, buf, NULL,  0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_len(&c, buf, 0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_INTEGER));
+
+	/* Export Q */
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_raw_buffer(&c, buf, NULL,  0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_len(&c, buf, 0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_INTEGER));
+
+	/* Export P */
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_raw_buffer(&c, buf, NULL,  0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_len(&c, buf, 0));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_INTEGER));
+
+  /* Export D */
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_raw_buffer(&c, buf, rsa->d.data,
+		rsa->d.length));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_len(&c, buf, rsa->d.length));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_INTEGER));
+
+  /* Export E */
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_raw_buffer(&c, buf, rsa->e.data,
+		rsa->e.length));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_len(&c, buf, rsa->e.length));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_INTEGER));
+
+  /* Export N */
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_raw_buffer(&c, buf, rsa->n.data,
+		rsa->n.length));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_len(&c, buf, rsa->n.length));
+	MBEDTLS_ASN1_CHK_ADD(len,
+		mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_INTEGER));
+
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(&c, buf, 0));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(&c, buf, len));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(&c,
+					       buf, MBEDTLS_ASN1_CONSTRUCTED |
+					       MBEDTLS_ASN1_SEQUENCE));
+
+	return (int) len;
+}
 
 /**
  * @brief   Cover a plain RSA private key into a black key
@@ -254,7 +500,8 @@ static TEE_Result castauth_GetHwId(uint8_t *hwid, uint32_t hwid_len);
  * @retval TEE_ERROR_OUT_OF_MEMORY    Can't allocate memory for one object
  * @retval TEE_ERROR_GENERIC Any      Other error condition
  */
-static TEE_Result castauth_WrapKey(char *plain_key, char *black_key)
+static TEE_Result castauth_WrapKey(const char *inkey, char *outkey,
+	uint32_t outkey_sz)
 {
 	TEE_Result res = TEE_ERROR_GENERIC;
 
@@ -263,7 +510,7 @@ static TEE_Result castauth_WrapKey(char *plain_key, char *black_key)
 	uint32_t err_origin;
 	uint32_t exp_param_types;
 	TEE_Param params[TEE_NUM_PARAMS];
-	key_class_t key_class = KEY_CLASS_ALL;
+	enum key_class_t key_class = KEY_CLASS_ALL;
 
 	struct rsa_attributes rsa = {0};
 
@@ -272,13 +519,13 @@ static TEE_Result castauth_WrapKey(char *plain_key, char *black_key)
 	void *tmp_buf = NULL;
 
 	/* Check input arguments */
-	if ((!plain_key) || (!black_key)) {
+	if ((!inkey) || (!outkey)) {
 		CAST_TRACE("NULL parameters");
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
 
 	key_class = KEY_CLASS_PLAIN;
-	if (pem_to_rsa_attr(plain_key, &rsa, key_class) != TEE_SUCCESS) {
+	if (pem_to_rsa_attr(inkey, &rsa, key_class) != TEE_SUCCESS) {
 		CAST_TRACE("Bad key format");
 		return TEE_ERROR_BAD_FORMAT;
 	}
@@ -307,7 +554,7 @@ static TEE_Result castauth_WrapKey(char *plain_key, char *black_key)
 	/* params[2] represents the black key */
 
 	params[0].value.a = IMX_CRYPT_ALG_RSA;
-	params[0].value.b = PTA_BK_ECB;
+	params[0].value.b = CAST_AUTH_KEY_TYPE;
 	params[1].memref.buffer = rsa.d.data;
 	params[1].memref.size = rsa.d.length;
 	params[2].memref.buffer = tmp_buf;
@@ -339,7 +586,7 @@ static TEE_Result castauth_WrapKey(char *plain_key, char *black_key)
 
 	/* Encode black key in PEM format */
 	key_class = KEY_CLASS_BLACK;
-	res = rsa_attr_to_pem(&rsa, black_key, key_class);
+	res = rsa_attr_to_pem(&rsa, outkey, outkey_sz, key_class);
 
 out:
 	if (rsa.d.data)
@@ -363,8 +610,8 @@ out:
  * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
  * @retval TEE_ERROR_GENERIC         Any other error condition
  */
-static TEE_Result castauth_BlobKey(blob_op_t blob_op, const char *in_key,
-		char *out_key)
+static TEE_Result castauth_BlobKey(enum blob_op_t blob_op, const char *in_key,
+		char *out_key, uint32_t out_key_size)
 {
 	TEE_Result res = TEE_ERROR_GENERIC;
 
@@ -373,16 +620,15 @@ static TEE_Result castauth_BlobKey(blob_op_t blob_op, const char *in_key,
 	uint32_t err_origin;
 	uint32_t exp_param_types;
 	TEE_Param params[TEE_NUM_PARAMS];
-	key_class_t key_class = KEY_CLASS_ALL;
+	enum key_class_t key_class = KEY_CLASS_ALL;
 	struct rsa_attributes rsa = {0};
 	uint8_t key_mod[PTA_BLOB_KEY_SIZE] = {0xad, 0x9a, 0x9d, 0xb0, 0x68,
 			0x6b, 0xbc, 0x67, 0xa6, 0xdb, 0xe8, 0x1f, 0x7b, 0x16,
 			0xa0, 0x7e};
 	uint32_t cmd;
 
-	/* Wrapped private exponent buffer */
-	void *tmp_buf = NULL;
-	uint32_t tmp_buf_len;
+	uint8_t *out_buf, *in_buf;
+	uint32_t out_buf_len, in_buf_len;
 
 	/* Check input arguments */
 	if ((!in_key) || (!out_key)) {
@@ -396,13 +642,30 @@ static TEE_Result castauth_BlobKey(blob_op_t blob_op, const char *in_key,
 		CAST_TRACE("Bad key format");
 		goto out;
 	}
+	in_buf = rsa.d.data;
 
-	tmp_buf_len = (blob_op == blob_encap) ? rsa.d.length
-			+ PTA_BLOB_PAD_SIZE : rsa.d.length - PTA_BLOB_PAD_SIZE;
+	/*
+	 * Get original key size from modulus size
+	 * Computation are based on the known size of key which is
+	 * multiple of 16 bytes
+	 */
+	if (blob_op == blob_encap) {
+		in_buf_len = rsa.n.length;
+		out_buf_len = in_buf_len + PTA_BLOB_PAD_SIZE;
+	} else if (blob_op == blob_decap) {
+		in_buf_len = rsa.d.length;
+		out_buf_len = in_buf_len - PTA_BLOB_PAD_SIZE;
+		if (CAST_AUTH_BLOB_TYPE == PTA_BLOB_BLACK_CCM)
+			out_buf_len += CCM_OVERHEAD;
+	}
 
-	/* Allocate memory for blob bytes */
-	tmp_buf = TEE_Malloc(tmp_buf_len, 0);
-	if (!tmp_buf) {
+	/*
+	 * Allocate memory for blob bytes
+	 * Add 16 bytes more to clean/flush real buffer
+	 * which contains more data
+	 */
+	out_buf = TEE_Malloc(out_buf_len + 16, 0);
+	if (!out_buf) {
 		CAST_TRACE("Error allocating memory");
 		res = TEE_ERROR_OUT_OF_MEMORY;
 		goto out;
@@ -429,16 +692,16 @@ static TEE_Result castauth_BlobKey(blob_op_t blob_op, const char *in_key,
 	/* params[2] represents the black private exponent */
 	/* params[3] represents the blobbed private exponent */
 
-	params[0].value.a = PTA_BLOB_BLACK_ECB;
+	params[0].value.a = CAST_AUTH_BLOB_TYPE;
 
 	params[1].memref.buffer = key_mod;
 	params[1].memref.size = sizeof(key_mod);
 
-	params[2].memref.buffer = rsa.d.data;
-	params[2].memref.size = rsa.d.length;
+	params[2].memref.buffer = in_buf;
+	params[2].memref.size = in_buf_len;
 
-	params[3].memref.buffer = tmp_buf;
-	params[3].memref.size = tmp_buf_len;
+	params[3].memref.buffer = out_buf;
+	params[3].memref.size = out_buf_len;
 
 	cmd = (blob_op == blob_encap)
 					 ? PTA_BLOB_CMD_ENCAPS
@@ -453,19 +716,16 @@ static TEE_Result castauth_BlobKey(blob_op_t blob_op, const char *in_key,
 		goto out;
 	}
 
-	/* Update buffer size */
-	tmp_buf_len = params[3].memref.size;
-
 	/* Free previous exponent */
 	TEE_Free(rsa.d.data);
 
 	/* Replace previous private exponent */
-	rsa.d.data = tmp_buf;
-	rsa.d.length = tmp_buf_len;
+	rsa.d.data = out_buf;
+	rsa.d.length = out_buf_len;
 
 	/* Write output key as PEM */
 	key_class = (blob_op == blob_encap) ? KEY_CLASS_BLOB : KEY_CLASS_BLACK;
-	res = rsa_attr_to_pem(&rsa, out_key, key_class);
+	res = rsa_attr_to_pem(&rsa, out_key, out_key_size, key_class);
 	if (res != TEE_SUCCESS) {
 		CAST_TRACE("Bad key format");
 		goto out;
@@ -516,9 +776,9 @@ static TEE_Result castauth_GenDevKeyCert(
 	char *public_key = NULL;
 	char *private_key = NULL;
 	char *black_key = NULL;
-	char *blob_key = NULL;
 	uint32_t keysize = MAX_KEY_PEM_SIZE;
-	char hwid_str[20] = {0x32};
+	char hwid_str[21] = {0};
+	char hwid_hex[17] = {0};
 	union hwid_t {
 		uint8_t as_bytes[8];
 		uint64_t as_long;
@@ -529,7 +789,6 @@ static TEE_Result castauth_GenDevKeyCert(
 	size_t nlen = 0;
 	uint8_t hash[CAST_AUTH_HASH_SIZE];
 	uint8_t tbs[sizeof(SHA256_HASH_PREFIX) + sizeof(hash)] = {0};
-	uint32_t public_modulus_len = sizeof(PUBLIC_MODULUS_PLACEHOLDER);
 	uint8_t *modulus = NULL;
 	uint32_t tbs_range_from = CERT_PREFIX_BYTES;
 	uint32_t tbs_range_len = inout_cert_len -
@@ -601,13 +860,6 @@ static TEE_Result castauth_GenDevKeyCert(
 		return TEE_ERROR_OUT_OF_MEMORY;
 	}
 
-	/* Allocate memory for blob key */
-	blob_key = TEE_Malloc(keysize, 0);
-	if (!blob_key) {
-		CAST_TRACE("Out of memory");
-		return TEE_ERROR_OUT_OF_MEMORY;
-	}
-
 	/* 2. Generate device-specific wrapping key */
 	/* 3. Generate RSA private key */
 	res = castauth_GenKeyPair(private_key, keysize, public_key, keysize);
@@ -616,18 +868,12 @@ static TEE_Result castauth_GenDevKeyCert(
 		goto out;
 	}
 	/* 4. Wrap the private key */
-	res = castauth_WrapKey(private_key, black_key);
+	res = castauth_WrapKey(private_key, black_key, keysize);
 	if (res != TEE_SUCCESS) {
 		CAST_TRACE("Error wrapping key");
 		goto out;
 	}
 
-	/* Export the key */
-	res = castauth_BlobKey(blob_encap, black_key, blob_key);
-	if (res != TEE_SUCCESS) {
-		CAST_TRACE("Error exporting black key");
-		goto out;
-	}
 	/* Read the RSA public key */
 	if (mbedtls_pk_parse_public_key(&pk, (uint8_t *)public_key,
 	strlen(public_key) + 1) != 0) {
@@ -661,13 +907,16 @@ static TEE_Result castauth_GenDevKeyCert(
 		goto out;
 	}
 
-	snprintf(hwid_str, sizeof(hwid_str), "%08llx", hwid.as_long);
+	/* Convert HW Id to hex format */
+	memset(hwid_str, 0x30, sizeof(hwid_str));
+	snprintf(hwid_hex, sizeof(hwid_hex), "%" PRIx64, hwid.as_long);
+	strncpy(hwid_str + 4, hwid_hex, sizeof(hwid_hex));
 
 	if (!replace_placeholder(certw, inout_cert_len,
 			HARDWARE_ID_PLACEHOLDER,
 			sizeof(HARDWARE_ID_PLACEHOLDER),
 			(uint8_t *)hwid_str,
-			sizeof(hwid_str))) {
+			sizeof(hwid_str) - 1)) {
 		CAST_TRACE("Error setting certificate subject");
 		res = TEE_ERROR_BAD_FORMAT;
 		goto out;
@@ -699,7 +948,7 @@ static TEE_Result castauth_GenDevKeyCert(
 			MAC_ADDRESS_PLACEHOLDER,
 			sizeof(MAC_ADDRESS_PLACEHOLDER), (uint8_t *)bss_id,
 			strlen(bss_id))) {
-		CAST_TRACE("Error setting certificate BSS Id");
+		CAST_TRACE("Error accessing RSA context");
 		res = TEE_ERROR_BAD_FORMAT;
 		goto out;
 	}
@@ -707,6 +956,7 @@ static TEE_Result castauth_GenDevKeyCert(
 	/* 9. Certificate template as DER */
 	rsa = mbedtls_pk_rsa(pk);
 	if (!rsa) {
+		CAST_TRACE("Error setting certificate BSS Id");
 		res = TEE_ERROR_BAD_PARAMETERS;
 		goto out;
 	}
@@ -719,15 +969,16 @@ static TEE_Result castauth_GenDevKeyCert(
 		goto out;
 	}
 
+	/* Read public modulus */
 	if (mbedtls_mpi_write_binary(&rsa->N, modulus, nlen)) {
 		res = TEE_ERROR_BAD_PARAMETERS;
 		goto out;
 	}
 
+	/* Set the certificate public key */
 	if (!replace_placeholder(certw, inout_cert_len,
-			PUBLIC_MODULUS_PLACEHOLDER +
-			(public_modulus_len - nlen),
-			public_modulus_len - (public_modulus_len - nlen),
+			PUBLIC_MODULUS_PLACEHOLDER + 1,
+			sizeof(PUBLIC_MODULUS_PLACEHOLDER) - 1,
 			modulus, nlen)) {
 		CAST_TRACE("Error setting certificate public key");
 		res = TEE_ERROR_BAD_FORMAT;
@@ -769,7 +1020,7 @@ static TEE_Result castauth_GenDevKeyCert(
 	memcpy(inout_cert, certw, inout_cert_len);
 
 	/* Return the device key to the caller */
-	memcpy(device_key, blob_key, strlen(blob_key));
+	memcpy(device_key, black_key, strlen(black_key));
 
 out:
 	if (public_key)
@@ -778,8 +1029,6 @@ out:
 		TEE_Free(private_key);
 	if (black_key)
 		TEE_Free(black_key);
-	if (blob_key)
-		TEE_Free(blob_key);
 	if (certw)
 		TEE_Free(certw);
 	if (modulus)
@@ -814,7 +1063,7 @@ uint32_t model_key_len __maybe_unused)
 	mbedtls_rsa_context rsa;
 	mbedtls_mpi N, E;
 	struct rsa_attributes rsa_attrs = {0};
-	key_class_t key_class = KEY_CLASS_BLACK;
+	enum key_class_t key_class = KEY_CLASS_BLACK;
 	uint8_t hash[CAST_AUTH_HASH_SIZE];
 	uint32_t tbs_range_from = CERT_PREFIX_BYTES;
 	uint32_t tbs_range_len = cert_len -
@@ -1109,62 +1358,6 @@ out:
 }
 
 /**
- * @brief   Exports an RSA Key to PEM format
- *
- * @param[in]  key       Context
- * @param[in]  buf       PEM buffer
- * @param[in]  size      PEM buffer size
- * @param[in]  key_class Key class (plain, black, blob)
- *
- * @retval TEE_SUCCESS              Success
- * @retval TEE_ERROR_OUT_OF_MEMORY  Can't allocate memory for one object
- * @retval TEE_ERROR_BAD_PARAMETERS Bad input parameters
- * @retval TEE_ERROR_BAD_FORMAT     Parameter is in bad format
- * @retval TEE_ERROR_GENERIC        Any other error condition
- */
-static TEE_Result castauth_WriteKeyPem(mbedtls_pk_context *key, char *buf,
-		size_t size, key_class_t key_class)
-{
-	unsigned char output_buf[WRAPPED_KEY_DER_MAX_BYTES];
-	const char *begin_pem;
-	const char *end_pem;
-	size_t olen = 0;
-	int der_bytes = 0;
-
-	if ((key == NULL) || (buf == NULL) || (size == 0) || (key_class
-			>= KEY_CLASS_ALL)) {
-		CAST_TRACE("NULL parameter");
-		return TEE_ERROR_BAD_PARAMETERS;
-	}
-
-	/* Encode in DER first */
-	der_bytes = mbedtls_pk_write_key_der(key, output_buf,
-			sizeof(output_buf));
-	if (der_bytes < 0) {
-		CAST_TRACE("Invalid key");
-		return TEE_ERROR_BAD_FORMAT;
-	}
-
-	if (mbedtls_pk_get_type(key) != MBEDTLS_PK_RSA) {
-		CAST_TRACE("Key is not an RSA key");
-		return TEE_ERROR_BAD_FORMAT;
-	}
-
-	/* Add PEM anchor */
-	begin_pem = key_class_pem[key_class].pem_anchor.begin;
-	end_pem = key_class_pem[key_class].pem_anchor.end;
-
-	/* Encode to PEM */
-	if (mbedtls_pem_write_buffer(begin_pem, end_pem,
-			output_buf + sizeof(output_buf) - der_bytes, der_bytes,
-			(uint8_t *)buf, size, &olen) != 0) {
-		CAST_TRACE("Error encoding key to PEM");
-		return TEE_ERROR_GENERIC;
-	}
-	return TEE_SUCCESS;
-}
-
-/**
  * @brief   Exports key bytes from PEM
  *
  * @param[in]  key_pem    Input key in PEM format
@@ -1178,7 +1371,7 @@ static TEE_Result castauth_WriteKeyPem(mbedtls_pk_context *key, char *buf,
  * @retval TEE_ERROR_GENERIC        Any other error condition
  */
 static TEE_Result pem_to_rsa_attr(const char *key_pem,
-		struct rsa_attributes *rsa_attrs, key_class_t key_class)
+		struct rsa_attributes *rsa_attrs, enum key_class_t key_class)
 {
 	TEE_Result res = TEE_ERROR_GENERIC;
 	mbedtls_pem_context pem_ctx;
@@ -1308,9 +1501,16 @@ static TEE_Result pem_to_rsa_attr(const char *key_pem,
 		res = TEE_ERROR_BAD_FORMAT;
 		goto out;
 	}
-	for (z = 0; z < len; z++)
-		if (ptr[z] != 0)
-			break;
+
+	/*
+	 * Remove leading zeros when using plain keys and keep them
+	 * when using black keys (CCM)
+	 */
+	z = 0;
+	if (key_class == KEY_CLASS_PLAIN)
+		for (z = 0; z < len; z++)
+			if (ptr[z] != 0)
+				break;
 
 	rsa_attrs->d.length = len - z;
 
@@ -1347,13 +1547,14 @@ out:
  * @retval TEE_ERROR_BAD_FORMAT     Parameter is in bad format
  * @retval TEE_ERROR_GENERIC        Any other error condition
  */
-static TEE_Result rsa_attr_to_pem(struct rsa_attributes *rsa_attrs,
-char *outpem, key_class_t key_class)
+static TEE_Result rsa_attr_to_pem(const struct rsa_attributes *rsa_attrs,
+char *outpem, uint32_t outpem_sz, enum key_class_t key_class)
 {
-	TEE_Result res = TEE_ERROR_GENERIC;
-	mbedtls_pk_context pk;
-	const mbedtls_pk_info_t *pk_info = NULL;
-	mbedtls_rsa_context *rsa = NULL;
+	unsigned char derbuf[WRAPPED_KEY_DER_MAX_BYTES];
+	const char *begin_pem;
+	const char *end_pem;
+	size_t olen = 0;
+	int der_bytes = 0;
 
 	/* Check arguments */
 	if ((!rsa_attrs) || (!outpem) || (key_class >= KEY_CLASS_ALL)) {
@@ -1361,75 +1562,26 @@ char *outpem, key_class_t key_class)
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
 
-	/* Initialize RSA context */
-	memset(&pk, 0, sizeof(mbedtls_pk_context));
-	mbedtls_pk_init(&pk);
-
-	/* Get information associated with the PK type. */
-	pk_info = mbedtls_pk_info_from_type(MBEDTLS_PK_RSA);
-	if (mbedtls_pk_setup(&pk, pk_info)) {
-		CAST_TRACE("Bad key format");
-		res = TEE_ERROR_BAD_PARAMETERS;
-		goto out;
+	/* Encode in DER first */
+	der_bytes = rsa_attr_to_der(rsa_attrs, derbuf, sizeof(derbuf));
+	if (der_bytes < 0) {
+		CAST_TRACE("Invalid key");
+		return TEE_ERROR_BAD_FORMAT;
 	}
 
-	/* Check if PK context can do RSA */
-	if (mbedtls_pk_can_do(&pk, MBEDTLS_PK_RSA) == 0) {
-		CAST_TRACE("Bad key format");
-		res = TEE_ERROR_NOT_SUPPORTED;
-		goto out;
+	/* Add PEM anchor */
+	begin_pem = key_class_pem[key_class].pem_anchor.begin;
+	end_pem = key_class_pem[key_class].pem_anchor.end;
+
+	/* Encode to PEM */
+	if (mbedtls_pem_write_buffer(begin_pem, end_pem,
+			derbuf + sizeof(derbuf) - der_bytes, der_bytes,
+			(uint8_t *)outpem, outpem_sz, &olen) != 0) {
+		CAST_TRACE("Error encoding key to PEM");
+		return TEE_ERROR_GENERIC;
 	}
 
-	/* Access the RSA context inside PK context */
-	rsa = mbedtls_pk_rsa(pk);
-	if (!rsa) {
-		res = TEE_ERROR_BAD_PARAMETERS;
-		goto out;
-	}
-
-	/* Import RSA key */
-	/* Import N */
-	if (mbedtls_mpi_read_binary(&rsa->N, rsa_attrs->n.data,
-			rsa_attrs->n.length)) {
-		CAST_TRACE("Error reading modulus");
-		res = TEE_ERROR_BAD_PARAMETERS;
-		goto out;
-	}
-	rsa->len = mbedtls_mpi_size(&rsa->N);
-
-	/* Import D */
-	if (mbedtls_mpi_read_binary(&rsa->D, rsa_attrs->d.data,
-			rsa_attrs->d.length)) {
-		CAST_TRACE("Error reading private exponent");
-		res = TEE_ERROR_BAD_PARAMETERS;
-		goto out;
-	}
-
-	/* Import E */
-	if (mbedtls_mpi_read_binary(&rsa->E, rsa_attrs->e.data,
-			rsa_attrs->e.length)) {
-		CAST_TRACE("Error reading public exponent");
-		res = TEE_ERROR_BAD_PARAMETERS;
-		goto out;
-	}
-
-	/* Check the consistency of public key */
-	if (mbedtls_rsa_check_pubkey(rsa) != 0) {
-		CAST_TRACE("Bad key format");
-		res = TEE_ERROR_BAD_PARAMETERS;
-		goto out;
-	}
-
-	/* Write private key as PEM format */
-	res = castauth_WriteKeyPem(&pk, outpem, MAX_KEY_PEM_SIZE, key_class);
-	if (res != TEE_SUCCESS) {
-		CAST_TRACE("Error writing key as PEM");
-		goto out;
-	}
-
-out:
-	mbedtls_pk_free(&pk);
-	return res;
+	return TEE_SUCCESS;
 }
 
 /**
@@ -1553,7 +1705,7 @@ static TEE_Result castauth_ProvKey(const char *enc_key, char *blob_pem,
 		res = TEE_ERROR_OUT_OF_MEMORY;
 		goto out;
 	}
-	res = castauth_WrapKey(plain_key, black_key);
+	res = castauth_WrapKey(plain_key, black_key, MAX_KEY_PEM_SIZE);
 	if (res != TEE_SUCCESS) {
 		CAST_TRACE("Error wrapping RSA key to black key");
 		goto out;
@@ -1566,7 +1718,8 @@ static TEE_Result castauth_ProvKey(const char *enc_key, char *blob_pem,
 		goto out;
 	}
 	/* Export it into a black blob */
-	res = castauth_BlobKey(blob_encap, black_key, blob_key);
+	res = castauth_BlobKey(blob_encap, black_key,
+	blob_key, MAX_KEY_PEM_SIZE);
 	if (res != TEE_SUCCESS) {
 		CAST_TRACE("Error exporting RSA black key to blob");
 		goto out;
@@ -1718,6 +1871,7 @@ uint32_t private_key_len, char *public_key, uint32_t public_key_len)
 		res = TEE_ERROR_BAD_PARAMETERS;
 		goto out;
 	}
+
 	rsa->len = mbedtls_mpi_size(&rsa->N);
 
 	/* Import D */
@@ -1801,7 +1955,7 @@ out:
  * @retval TEE_ERROR_BAD_FORMAT     Format is in a bad format
  * @retval TEE_ERROR_GENERIC        Any other error condition
  */
-static TEE_Result castauth_SignHash(const char *key_pem, uint8_t *hash,
+static TEE_Result castauth_SignHash(const char *key_pem, const uint8_t *hash,
 		uint32_t hash_len, uint8_t *outsig, uint32_t outsig_len)
 {
 	TEE_Result res = TEE_ERROR_GENERIC;
@@ -1814,7 +1968,10 @@ static TEE_Result castauth_SignHash(const char *key_pem, uint8_t *hash,
 	struct rsa_attributes rsa = {0};
 	uint8_t hash_p[CAST_AUTH_KEY_SIZE] = {0};
 	uint32_t hash_p_len = sizeof(hash_p);
-	struct pta_bk_buf key[2] = {0};
+	size_t param_count = 0;
+	TEE_Attribute rsa_params[4] = {0};
+	uint8_t *key = NULL;
+	size_t key_len = 0;
 
 	/* Check input arguments */
 	if (!key_pem || !hash || !outsig) {
@@ -1828,6 +1985,20 @@ static TEE_Result castauth_SignHash(const char *key_pem, uint8_t *hash,
 		return TEE_ERROR_BAD_FORMAT;
 	}
 
+	add_attr(&param_count, rsa_params, TEE_ATTR_RSA_PRIVATE_EXPONENT,
+			       rsa.d.data, rsa.d.length);
+
+	add_attr(&param_count, rsa_params, TEE_ATTR_RSA_MODULUS,
+			       rsa.n.data, rsa.n.length);
+
+	res = pack_attrs((const TEE_Attribute *)rsa_params,
+		param_count, &key, &key_len);
+	if (res != TEE_SUCCESS) {
+		CAST_TRACE(
+				"Error packing RSA attributes 0x%x",
+				res);
+		goto out;
+	}
 	/*
 	 * openning session with PTA
 	 * in this case the TA plays the role of the CA
@@ -1859,16 +2030,10 @@ static TEE_Result castauth_SignHash(const char *key_pem, uint8_t *hash,
 	/* params[3] represents the signature */
 
 	params[0].value.a = IMX_CRYPT_ALG_RSA;
-	params[0].value.b = PTA_BK_ECB;
-
-	key[0].length = rsa.d.length;
-	key[0].data = rsa.d.data;
-
-	key[1].length = rsa.n.length;
-	key[1].data = rsa.n.data;
+	params[0].value.b = CAST_AUTH_KEY_TYPE;
 
 	params[1].memref.buffer = key;
-	params[1].memref.size = sizeof(key);
+	params[1].memref.size = key_len;
 
 	params[2].memref.buffer = hash_p;
 	params[2].memref.size = hash_p_len;
@@ -2002,9 +2167,9 @@ static char *strtok1(char *str, const char *delimiters)
 	}
 
 	/*
-	* find the end of the substring, and
-	* replace the delimiter with null
-	*/
+	 * find the end of the substring, and
+	 * replace the delimiter with null
+	 */
 	while (*sp != '\0') {
 		for (i = 0; i < len; i++) {
 			if (*sp == delimiters[i]) {
@@ -2177,7 +2342,7 @@ static TEE_Result TA_CastAuthWrapKey(uint32_t param_types,
 	 * params[1] represents the black key in PEM format
 	 */
 	return castauth_WrapKey(params[0].memref.buffer,
-			params[1].memref.buffer);
+			params[1].memref.buffer, params[1].memref.size);
 }
 
 /**
@@ -2206,7 +2371,7 @@ static TEE_Result TA_CastAuthExportKey(uint32_t param_types,
 	 * params[1] represents the output blob key in PEM format
 	 */
 	return castauth_BlobKey(blob_encap, params[0].memref.buffer,
-			params[1].memref.buffer);
+			params[1].memref.buffer, params[1].memref.size);
 }
 
 /**
@@ -2235,7 +2400,7 @@ static TEE_Result TA_CastAuthImportKey(uint32_t param_types,
 	 * params[1] represents the output black key in PEM format
 	 */
 	return castauth_BlobKey(blob_decap, params[0].memref.buffer,
-			params[1].memref.buffer);
+			params[1].memref.buffer, params[1].memref.size);
 }
 
 /**
@@ -2338,7 +2503,7 @@ TEE_Result TA_EXPORT TA_OpenSessionEntryPoint(uint32_t param_types,
 		return TEE_ERROR_BAD_PARAMETERS;
 
 	/* If return value != TEE_SUCCESS the session will not be created. */
-	CAST_TRACE("TA_OpenSessionEntryPoint success");
+	CAST_TRACE("TA Open Session success");
 	return TEE_SUCCESS;
 }
 
@@ -2365,6 +2530,7 @@ void TA_EXPORT TA_CloseSessionEntryPoint(void *sess_ctx __maybe_unused)
 TEE_Result TA_EXPORT TA_InvokeCommandEntryPoint(void *sess_ctx __maybe_unused,
 uint32_t cmd_id, uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS])
 {
+
 	switch (cmd_id) {
 
 	case TA_CASTAUTH_CMD_PROV_DEV_KEY:

@@ -18,18 +18,13 @@
 
 /**
  * @brief   Encapsulates a plain key into black key command id
- */	
+ */
 #define PTA_BK_CMD_ENCAPS 1
 
 /**
  * @brief   Sign using black key command id in PTA
  */
 #define PTA_BK_CMD_SIGN   2
-
-/**
- * @brief   Max key components count
- */
-#define PTA_BK_MAX_KEYS 10
 
 /**
  * @brief   PTA black key Type
@@ -40,14 +35,5 @@ enum PTA_BK_TYPE {
 	PTA_BK_ECB, ///< Black key mode - key encrypted in AES ECB
 	PTA_BK_CCM, ///< Black key mode - key encrypted in AES CCM
 };
-
-/**
- * @brief   Data structure to holds key components.
- */
-struct pta_bk_buf {
-	uint8_t *data;   ///< Pointer to buffer
-	uint32_t length; ///< Buffer length
-};
-
 
 #endif /* __PTA_BK_H__ */
