@@ -1,6 +1,6 @@
-From cb5ae5c1cc1798db83984c5fce85edd25f868f8f Mon Sep 17 00:00:00 2001
+From 000ff8cf3c10ed91a51f149a44e3f1225ee0b650 Mon Sep 17 00:00:00 2001
 From: Marouene Boubakri <marouene.boubakri@nxp.com>
-Date: Tue, 11 Jun 2019 13:44:53 +0200
+Date: Wed, 12 Jun 2019 10:30:06 +0200
 Subject: [PATCH] caam black key blob feature
 
 ---
@@ -9,7 +9,7 @@ Subject: [PATCH] caam black key blob feature
  arch/arm64/configs/defconfig         |   5 +
  drivers/crypto/caam/Kconfig          |  45 +-
  drivers/crypto/caam/Makefile         |   5 +
- drivers/crypto/caam/black_keys.c     | 317 +++++++++++++
+ drivers/crypto/caam/black_keys.c     | 317 ++++++++++++++
  drivers/crypto/caam/blob.c           | 510 +++++++++++++++++++++
  drivers/crypto/caam/caam.h           |  41 ++
  drivers/crypto/caam/caam_desc.c      | 548 +++++++++++++++++++++++
@@ -18,12 +18,12 @@ Subject: [PATCH] caam black key blob feature
  drivers/crypto/caam/caam_util.h      | 130 ++++++
  drivers/crypto/caam/desc.h           |   3 +
  drivers/crypto/caam/jr.c             |  45 ++
- drivers/crypto/caam/key_blob.c       | 831 +++++++++++++++++++++++++++++++++++
+ drivers/crypto/caam/key_blob.c       | 829 +++++++++++++++++++++++++++++++++++
  drivers/crypto/caam/key_blob.h       |  40 ++
  drivers/crypto/caam/sm.h             |  35 +-
  drivers/crypto/caam/sm_store.c       | 598 +------------------------
  drivers/crypto/caam/sm_test.c        | 237 ++++++++--
- 19 files changed, 3099 insertions(+), 654 deletions(-)
+ 19 files changed, 3096 insertions(+), 654 deletions(-)
  create mode 100644 drivers/crypto/caam/black_keys.c
  create mode 100644 drivers/crypto/caam/blob.c
  create mode 100644 drivers/crypto/caam/caam.h
@@ -1048,7 +1048,7 @@ index 0000000..e2e56c0
 +#endif /* _CAAM_H_ */
 diff --git a/drivers/crypto/caam/caam_desc.c b/drivers/crypto/caam/caam_desc.c
 new file mode 100644
-index 0000000..1b43bd4
+index 0000000..efae678
 --- /dev/null
 +++ b/drivers/crypto/caam/caam_desc.c
 @@ -0,0 +1,548 @@
@@ -2177,10 +2177,10 @@ index 616a427..49fd2b9 100644
   */
 diff --git a/drivers/crypto/caam/key_blob.c b/drivers/crypto/caam/key_blob.c
 new file mode 100644
-index 0000000..83d2792
+index 0000000..6f0a9ed
 --- /dev/null
 +++ b/drivers/crypto/caam/key_blob.c
-@@ -0,0 +1,831 @@
+@@ -0,0 +1,829 @@
 +/*
 + * Copyright 2019 NXP
 + *
@@ -2457,8 +2457,6 @@ index 0000000..83d2792
 +	} else {
 +		sm_keystore_slot_alloc(ksdev, unit, key_len, &keyslot);
 +		sm_keystore_slot_load(ksdev, unit, keyslot, kb_addr.key_addr, key_len);
-+		if (key_color == KEY_COLOR_BLACK)
-+			sm_keystore_cover_key(ksdev, unit, keyslot, key_len, KEY_COVER_ECB);
 +		sm_keystore_slot_export(ksdev, unit, keyslot, key_color, key_cover, kb_addr.blob_addr, key_len, skeymod);
 +	}
 +
