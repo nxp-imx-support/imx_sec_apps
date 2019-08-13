@@ -416,6 +416,48 @@ free_resources:
 	return 0;
 }
 
+int roundup(char file_name[])
+{
+	int rc;
+	int fdin;
+	int ret = -1;
+	int size_pad;
+	struct stat statbuf;
+
+	fdin = open(file_name, O_RDWR | O_CREAT);
+	if (fdin == -1) {
+		printf("Can not open the file %s\n", file_name);
+		return ret;
+	}
+
+	rc = fstat(fdin, &statbuf);
+	if (rc == -1) {
+		printf("Fstat error\n");
+		return ret;
+	}
+
+	if (statbuf.st_size % 16 == 0)
+		return 0;
+
+	printf("Adjust file's size ('%s') to be a multiple of 16 - needed by AES algorithm.\n", file_name);
+	size_pad = ((statbuf.st_size + 15) & ~15);
+	rc = ftruncate(fdin, size_pad);
+	if(rc == -1)
+	{
+		printf("Truncate operation failed. Please check again the input key files \
+			(properties, access settings etc)\n");
+		return ret;
+	}
+
+	rc = close(fdin);
+	if (rc == -1) {
+		printf("Close input file failed.\n");
+		return ret;
+	}
+
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	char *key_file = NULL;
@@ -436,6 +478,7 @@ int main(int argc, char *argv[])
 		key_color = argv[2];
 		key_file = argv[3];
 		blob_file = argv[4];
+		roundup(key_file);
 	} else if (!strcmp(op, "decap")) {
 		if (argc < 5)
 			goto out_usage;
@@ -449,6 +492,7 @@ int main(int argc, char *argv[])
 		blob_file = argv[3];
 		input_file = argv[4];
 		encrypted_file = argv[5];
+		roundup(input_file);
 	} else if (!strcmp(op, "decr")) {
 		if (argc < 6)
 			goto out_usage;
