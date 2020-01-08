@@ -1,0 +1,62 @@
+From ced1fa1de2ebc11a777cf40a5724f7e482f446a2 Mon Sep 17 00:00:00 2001
+From: Marouene Boubakri <marouene.boubakri@nxp.com>
+Date: Wed, 04 Dec 2019 09:53:42 +0200
+Subject: [PATCH] block: Undo unexport elv_register_queue() and
+ elv_unregister_queue()
+
+---
+ block/blk.h              | 3 ---
+ block/elevator.c         | 2 ++
+ include/linux/elevator.h | 2 ++
+ 3 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/block/blk.h b/block/blk.h
+index 521ea46..b2c287c 100644
+--- a/block/blk.h
++++ b/block/blk.h
+@@ -204,9 +204,6 @@ static inline void elv_deactivate_rq(struct request_queue *q, struct request *rq
+ 		e->type->ops.sq.elevator_deactivate_req_fn(q, rq);
+ }
+ 
+-int elv_register_queue(struct request_queue *q);
+-void elv_unregister_queue(struct request_queue *q);
+-
+ struct hd_struct *__disk_get_part(struct gendisk *disk, int partno);
+ 
+ #ifdef CONFIG_FAIL_IO_TIMEOUT
+diff --git a/block/elevator.c b/block/elevator.c
+index 4258cb9..b0400c8 100644
+--- a/block/elevator.c
++++ b/block/elevator.c
+@@ -871,6 +871,7 @@ int elv_register_queue(struct request_queue *q)
+ 	}
+ 	return error;
+ }
++EXPORT_SYMBOL(elv_register_queue);
+ 
+ void elv_unregister_queue(struct request_queue *q)
+ {
+@@ -886,6 +887,7 @@ void elv_unregister_queue(struct request_queue *q)
+ 		wbt_enable_default(q);
+ 	}
+ }
++EXPORT_SYMBOL(elv_unregister_queue);
+ 
+ int elv_register(struct elevator_type *e)
+ {
+diff --git a/include/linux/elevator.h b/include/linux/elevator.h
+index b974133..ddb7632 100644
+--- a/include/linux/elevator.h
++++ b/include/linux/elevator.h
+@@ -197,6 +197,8 @@ extern bool elv_attempt_insert_merge(struct request_queue *, struct request *);
+ extern void elv_requeue_request(struct request_queue *, struct request *);
+ extern struct request *elv_former_request(struct request_queue *, struct request *);
+ extern struct request *elv_latter_request(struct request_queue *, struct request *);
++extern int elv_register_queue(struct request_queue *q);
++extern void elv_unregister_queue(struct request_queue *q);
+ extern int elv_may_queue(struct request_queue *, unsigned int);
+ extern void elv_completed_request(struct request_queue *, struct request *);
+ extern int elv_set_request(struct request_queue *q, struct request *rq,
+-- 
+2.7.4
+
