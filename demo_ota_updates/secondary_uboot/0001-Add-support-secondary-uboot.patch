@@ -1,0 +1,199 @@
+diff --git a/arch/arm/mach-imx/spl.c b/arch/arm/mach-imx/spl.c
+index 3a66868..7669e9c 100644
+--- a/arch/arm/mach-imx/spl.c
++++ b/arch/arm/mach-imx/spl.c
+@@ -294,11 +294,39 @@ ulong board_spl_fit_size_align(ulong size)
+ void board_spl_fit_post_load(ulong load_addr, size_t length)
+ {
+ 	uint32_t offset = length - CONFIG_CSF_SIZE;
++	int ret = 0;
++	int * IM = (int*)0x70000000;
++	static int try_secondary = 0;
++
++        struct spl_boot_device bootdev;
++        bootdev.boot_device = BOOT_DEVICE_MMC1;
++        bootdev.boot_device_name = NULL;
++
+ 	if (imx_hab_authenticate_image(load_addr,
+-					offset + IVT_SIZE + CSF_PAD_SIZE,
+-					offset)) {
++				       offset + IVT_SIZE + CSF_PAD_SIZE,
++				       offset)) {
+ 		puts("spl: ERROR:  image authentication unsuccessful\n");
+-		hang();
++		if (0 == try_secondary){
++		    puts("spl: try secondary boot...\n");
++		    // try secondary
++		    try_secondary = 1;
++
++		    struct spl_image_info spl_image;
++		    memset(&spl_image, '\0', sizeof(spl_image));
++		    //spl_image.boot_device = BOOT_DEVICE_NONE;
++
++		    ret = spl_mmc_load_secondary_image(&spl_image, &bootdev);
++		    if (0 != ret){
++			puts("spl: ERROR:  image load unsuccessful\n");
++			hang();
++		    }
++		    *IM = 2;
++		} else {
++		    puts("spl: ERROR:  image authentication unsuccessful\n");
++		    hang();
++		}
++	} else {
++		*IM = 1;
+ 	}
+ }
+ 
+diff --git a/common/spl/spl_mmc.c b/common/spl/spl_mmc.c
+index 12ba441..b778ed7 100644
+--- a/common/spl/spl_mmc.c
++++ b/common/spl/spl_mmc.c
+@@ -321,6 +321,13 @@ unsigned long __weak spl_mmc_get_uboot_raw_sector(struct mmc *mmc)
+ }
+ #endif
+ 
++#ifdef CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR
++unsigned long __weak spl_mmc_get_secondary_uboot_raw_sector(struct mmc *mmc)
++{
++	return CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR + CONFIG_SYS_MMCSD_RAW_SECONDARY_U_BOOT_SECTOR;
++}
++#endif
++
+ #ifdef CONFIG_PARSE_CONTAINER
+ int __weak mmc_load_image_parse_container(struct spl_image_info *spl_image,
+ 				     struct mmc *mmc, unsigned long sector)
+@@ -441,6 +448,111 @@ int spl_mmc_load_image(struct spl_image_info *spl_image,
+ 	return err;
+ }
+ 
++int spl_mmc_load_secondary_image(struct spl_image_info *spl_image,
++		       struct spl_boot_device *bootdev)
++{
++	struct mmc *mmc = NULL;
++	u32 boot_mode;
++	int err = 0;
++	__maybe_unused int part;
++
++	err = spl_mmc_find_device(&mmc, bootdev->boot_device);
++	if (err)
++		return err;
++
++	err = mmc_init(mmc);
++	if (err) {
++#ifdef CONFIG_SPL_LIBCOMMON_SUPPORT
++		printf("spl: mmc init failed with error: %d\n", err);
++#endif
++		return err;
++	}
++
++	boot_mode = spl_boot_mode(bootdev->boot_device);
++	err = -EINVAL;
++	switch (boot_mode) {
++	case MMCSD_MODE_EMMCBOOT:
++			/*
++			 * We need to check what the partition is configured to.
++			 * 1 and 2 match up to boot0 / boot1 and 7 is user data
++			 * which is the first physical partition (0).
++			 */
++#ifdef CONFIG_DUAL_BOOTLOADER
++			/* Bootloader is stored in eMMC user partition for dual bootloader */
++			part = 0;
++#else
++			part = (mmc->part_config >> 3) & PART_ACCESS_MASK;
++
++			if (part == 7)
++				part = 0;
++#endif
++
++			if (CONFIG_IS_ENABLED(MMC_TINY))
++				err = mmc_switch_part(mmc, part);
++			else
++				err = blk_dselect_hwpart(mmc_get_blk_desc(mmc), part);
++
++			if (err) {
++#ifdef CONFIG_SPL_LIBCOMMON_SUPPORT
++				puts("spl: mmc partition switch failed\n");
++#endif
++				return err;
++			}
++			/* Fall through */
++	case MMCSD_MODE_RAW:
++		debug("spl: mmc boot mode: raw\n");
++
++		if (!spl_start_uboot()) {
++			err = mmc_load_image_raw_os(spl_image, mmc);
++			if (!err)
++				return err;
++		}
++#ifdef CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_PARTITION
++		err = mmc_load_image_raw_partition(spl_image, mmc,
++			CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_PARTITION);
++		if (!err)
++			return err;
++#endif
++#ifdef CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR
++#ifdef CONFIG_DUAL_BOOTLOADER
++#ifdef CONFIG_PARSE_CONTAINER
++		err = mmc_load_image_parse_container_dual_uboot(spl_image,
++								mmc);
++#else
++		err = mmc_load_image_raw_sector_dual_uboot(spl_image,
++							   mmc);
++#endif
++#else
++#ifdef CONFIG_PARSE_CONTAINER
++		err = mmc_load_image_parse_container(spl_image, mmc,
++				spl_mmc_get_uboot_raw_sector(mmc));
++#else
++		err = mmc_load_image_raw_sector(spl_image, mmc,
++			spl_mmc_get_secondary_uboot_raw_sector(mmc));
++#endif
++#endif
++		if (!err)
++			return err;
++#endif
++		/* If RAW mode fails, try FS mode. */
++	case MMCSD_MODE_FS:
++		debug("spl: mmc boot mode: fs\n");
++
++		err = spl_mmc_do_fs_boot(spl_image, mmc);
++		if (!err)
++			return err;
++
++		break;
++#ifdef CONFIG_SPL_LIBCOMMON_SUPPORT
++	default:
++		puts("spl: mmc: wrong boot mode\n");
++#endif
++	}
++
++	return err;
++}
++
++
+ SPL_LOAD_IMAGE_METHOD("MMC1", 0, BOOT_DEVICE_MMC1, spl_mmc_load_image);
+ SPL_LOAD_IMAGE_METHOD("MMC2", 0, BOOT_DEVICE_MMC2, spl_mmc_load_image);
+ SPL_LOAD_IMAGE_METHOD("MMC2_2", 0, BOOT_DEVICE_MMC2_2, spl_mmc_load_image);
+diff --git a/include/spl.h b/include/spl.h
+index 199ce33..aef0400 100644
+--- a/include/spl.h
++++ b/include/spl.h
+@@ -16,6 +16,8 @@
+ /* Value in r0 indicates we booted from U-Boot */
+ #define UBOOT_NOT_LOADED_FROM_SPL	0x13578642
+ 
++#define CONFIG_SYS_MMCSD_RAW_SECONDARY_U_BOOT_SECTOR 0x1000
++
+ /* Boot type */
+ #define MMCSD_MODE_UNDEFINED	0
+ #define MMCSD_MODE_RAW		1
+@@ -299,6 +301,8 @@ int spl_dfu_cmd(int usbctrl, char *dfu_alt_info, char *interface, char *devstr);
+ int spl_mmc_load_image(struct spl_image_info *spl_image,
+ 		       struct spl_boot_device *bootdev);
+ 
++int spl_mmc_load_secondary_image(struct spl_image_info *spl_image,
++			struct spl_boot_device *bootdev);
+ /**
+  * spl_invoke_atf - boot using an ARM trusted firmware image
+  */
