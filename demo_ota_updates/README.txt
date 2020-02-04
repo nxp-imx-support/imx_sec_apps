@@ -92,7 +92,7 @@ This binary sends the requests to the CA for extracting the MPPubk and MPPrivk s
 	$ cd ~/demo_ota_updates/bin/
 	$ make
 - Install:
-	$ cp castauth <GVA_Image_rootfs>/usr/bin/
+	$ cp secureota <Image_rootfs>/usr/bin/
 
 1.7 Add secondary U-Boot functionality 
 ---------------------------------------
@@ -141,12 +141,12 @@ Needed for creating a user-space blob for the MPPubk.
 		
 - Mender server:
   Add MP mechanism in the device authentication service: 
-	a.	Download mender deviceauth service: https://github.com/mendersoftware/deviceauth.
-	b.	Apply the patch found in mender_server directory and build the docker container: 
+	a. Download mender deviceauth service: https://github.com/mendersoftware/deviceauth.
+	b. Apply the patch found in mender_server directory and build the docker container: 
 		$ cd ~/mender-server/deviceauth
 		$ git apply 0001-Verify-MPPrivk-signature-deviceauth-server.patch  
-	c.	Set the Mender server to use the previously built container and start the Mender server.
-	d.	The Mender UI should now be found at https://localhost/.
+	c. Set the Mender server to use the previously built container and start the Mender server.
+	d. The Mender UI should now be found at https://localhost/.
 
 2. Usage
 - The device should appear as pending in the Mender Server until the Mender Server owner authorizes the device from
