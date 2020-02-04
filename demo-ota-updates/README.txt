@@ -72,7 +72,7 @@ we have integrated the Manufacturing Protection mechanism for device – server 
 	$ export CROSS_COMPILE=~/toolchains/aarch64/bin/aarch64-linux-gnu-
 	$ export TA_DEV_KIT_DIR=~/imx-yocto-bsp/build/tmp/work/imx8mmddr4evk-poky-linux/optee-os-imx/git-r0/build.mx8mmevk/export-ta_arm64
 - Build:
-	$ cd ~/demo_ota_updates/ta
+	$ cd ~/demo-ota-updates/ta
 	$ make
 - Install:
 	$ cp *.ta <Image_rootfs>/lib/optee_armtz/
@@ -80,7 +80,7 @@ we have integrated the Manufacturing Protection mechanism for device – server 
 1.5 Build Client Application (CA)
 ----------------------------------------
 - Build:
-	$ cd ~/demo_ota_updates/ca
+	$ cd ~/demo-ota-updates/ca
 	$ make
 - Install:
 	$ cp libsecure_ota_optee.so <Image_rootfs>/usr/lib
@@ -89,7 +89,7 @@ we have integrated the Manufacturing Protection mechanism for device – server 
 1.6 Secureota optee utility on the board:
 This binary sends the requests to the CA for extracting the MPPubk and MPPrivk signature.
 - Build:
-	$ cd ~/demo_ota_updates/bin/
+	$ cd ~/demo-ota-updates/bin/
 	$ make
 - Install:
 	$ cp secureota <Image_rootfs>/usr/bin/
