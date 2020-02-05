@@ -5,7 +5,7 @@ This prototype implementation is based on Mender, an open source project for upd
 we have integrated the Manufacturing Protection mechanism for device – server authentication and U-Boot update feature.
 
 1.1 Download application
-------------------------------------
+---------------------------------------------
 	
 - The patches and the source code of the application can be downloaded by cloning this
   bitbucket repo, branch master:
@@ -13,7 +13,7 @@ we have integrated the Manufacturing Protection mechanism for device – server 
   $ git clone ssh://git@bitbucket.sw.nxp.com/imxs/imx_sec_apps.git
 
 1.2 Mender client-server
--------------------------------------
+---------------------------------------------
 - In order to build an image with mender, please follow this user guide: 
 	https://hub.mender.io/t/nxp-i-mx-8m-mini-evaluation-kit/659
 
@@ -25,7 +25,7 @@ we have integrated the Manufacturing Protection mechanism for device – server 
   For any problems related to client-server communication, please see the troubleshooting section from the Mender project documentation.
   
 1.3 Enable Manufacturing protection
------------------------------------------
+---------------------------------------------
 - Edit sources/meta-fsl-bsp-release/imx/meta-bsp/recipes-security/optee-imx/optee-os-imx_git.bb and replace 
 	SRCBRANCH = "imx_4.14.78_1.0.0_ga"
 	OPTEE_OS_SRC ?= "git://source.codeaurora.org/external/imx/imx-optee-os.git;protocol=https"
@@ -64,7 +64,7 @@ we have integrated the Manufacturing Protection mechanism for device – server 
 	$ bitbake optee-os-imx
 
 1.4  Build Trusted Application (TA)
----------------------------------------
+---------------------------------------------
 - Set OPENSSL_LIB_PATH, OPENSSL_PATH, CROSS_COMPILE, TA_DEV_KIT_DIR env variables.
   Example:
     $ export OPENSSL_LIB_PATH= ~/imx-yocto-bsp/build/tmp/work/aarch64-poky-linux/openssl/1.0.2p-r0/image/usr/lib
@@ -78,7 +78,7 @@ we have integrated the Manufacturing Protection mechanism for device – server 
 	$ cp *.ta <Image_rootfs>/lib/optee_armtz/
 
 1.5 Build Client Application (CA)
-----------------------------------------
+---------------------------------------------
 - Build:
 	$ cd ~/demo-ota-updates/ca
 	$ make
@@ -87,6 +87,7 @@ we have integrated the Manufacturing Protection mechanism for device – server 
 	$ cp ota_ca.h <Image_rootfs>/usr/include/
 
 1.6 Secureota optee utility on the board:
+---------------------------------------------
 This binary sends the requests to the CA for extracting the MPPubk and MPPrivk signature.
 - Build:
 	$ cd ~/demo-ota-updates/bin/
@@ -95,7 +96,7 @@ This binary sends the requests to the CA for extracting the MPPubk and MPPrivk s
 	$ cp secureota <Image_rootfs>/usr/bin/
 
 1.7 Add secondary U-Boot functionality 
----------------------------------------
+---------------------------------------------
 Redundant U-Boot if FIT image gets corrupted.
 - Edit u-boot-mender-common.inc and add:
 	$ cd ~/imx-yocto-bsp/sources/meta-mender/meta-mender-core/recipes-bsp/u-boot/
@@ -108,7 +109,7 @@ Redundant U-Boot if FIT image gets corrupted.
 	$ bitbake u-boot
 
 1.8 Add CAAM blobs support 
----------------------------------------
+---------------------------------------------
 Needed for creating a user-space blob for the MPPubk.
 - Apply patches:
 	$ cd ~/imx-yocto-bsp/sources/meta-fsl-bsp-release/imx/meta-bsp/recipes-kernel/linux/
@@ -129,7 +130,7 @@ Needed for creating a user-space blob for the MPPubk.
 	$ sudo dd if=core-image-minimal.sdimg  of=/dev/<sdX> bs=1M && sudo sync
 
 1.9 Customized Mender client-server
--------------------------------------
+---------------------------------------------
 - Mender client:
 	a. Download sources: https://github.com/mendersoftware/mender.
 	b. Apply patch found in mender_client directory:
