@@ -132,15 +132,12 @@ static int ota_call(uint32_t cmd, TEEC_Operation *op){
 		errx(1, "Error getting session\n");
 		return ota_error(res);
 	}
-	fprintf(stderr, "\nLALALA CA ota_call file SIZE %ld\n", op->params[0].tmpref.size);
 	/* Invoke a command in TA */
 	res = TEEC_InvokeCommand(&g_session, cmd, op, &err_origin);
-	fprintf(stderr, "\nLALALA  CA ota_call AFTER INVOKE COMMAND\n");
 	if (res != TEEC_SUCCESS) {
 		errx(1, "TEEC_InvokeCommand failed with code 0x%x origin 0x%x",
 				res, err_origin);
 	}
-	fprintf(stderr, "\nLALALA CA ota_call RES = %d\n", res);
 	/* Terminate the session */
 	ota_fini_session();
 
@@ -161,7 +158,6 @@ char *ota_GetMPPubkey()
 	char *mp_pubkey = NULL;
 
 	mp_pubkey = malloc(MAX_KEY_PEM_SIZE);
-	fprintf(stderr, "\nLALALA CA ota_GetMPPubkey MAX_KEY_PEM_SIZE %d\n", MAX_KEY_PEM_SIZE);
 	if (!mp_pubkey) {
 		errx(1, "Out of memory\n");
 		return NULL;

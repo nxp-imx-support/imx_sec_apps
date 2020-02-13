@@ -1,5 +1,5 @@
 #!/bin/bash
-file = /var/lib/mender/uboot_type.txt
+file=/var/lib/mender/uboot_type.txt
 if [ ! -e "$file" ]; then
 	echo "Uboot_type file does not exist. Please make sure you run get_uboot_type.c and the file /var/lib/mender/uboot_type.txt exists."
 	exit 1
