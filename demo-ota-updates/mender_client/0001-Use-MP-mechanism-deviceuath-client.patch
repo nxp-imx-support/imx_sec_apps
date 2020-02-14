@@ -1,16 +1,18 @@
-commit f022a66caed64daf0a704dc1e4955beb89a1ac00
-Author: Andreea Proca <andreea-brandusa.proca@nxp.com>
-Date:   Fri Jan 31 11:36:38 2020 +0200
-
-    Modify mender client to send Manufacturing Protection Publick key
-    and a message signed using MP Private key to the mender server
-    for device authentication.
-
 diff --git a/auth.go b/auth.go
-index 8e3f4f9..4171ed9 100644
+index 2fc1dc4..6029a2e 100644
 --- a/auth.go
 +++ b/auth.go
-@@ -44,6 +44,10 @@ type AuthManager interface {
+@@ -16,6 +16,9 @@ package main
+ import (
+ 	"os"
+ 	"strings"
++	"bytes"
++	"strconv"
++	"os/exec"
+ 
+ 	"github.com/mendersoftware/log"
+ 	"github.com/mendersoftware/mender/client"
+@@ -41,6 +44,10 @@ type AuthManager interface {
  
  const (
  	noAuthToken = client.EmptyAuthToken
@@ -21,7 +23,7 @@ index 8e3f4f9..4171ed9 100644
  )
  
  type MenderAuthManager struct {
-@@ -102,6 +106,8 @@ func (m *MenderAuthManager) IsAuthorized() bool {
+@@ -99,6 +106,8 @@ func (m *MenderAuthManager) IsAuthorized() bool {
  func (m *MenderAuthManager) MakeAuthRequest() (*client.AuthRequest, error) {
  
  	var err error
@@ -30,68 +32,65 @@ index 8e3f4f9..4171ed9 100644
  	authd := client.AuthReqData{}
  
  	idata, err := m.idSrc.Get()
-@@ -112,19 +118,26 @@ func (m *MenderAuthManager) MakeAuthRequest() (*client.AuthRequest, error) {
+@@ -109,18 +118,35 @@ func (m *MenderAuthManager) MakeAuthRequest() (*client.AuthRequest, error) {
  	authd.IdData = idata
  
  	// fill device public key
--	var key_path = "/var/lib/mender/mp.pem"
--	ret_c, err := run_cmd("mppubk", "", key_path)
--	if (ret_c == -1 || err != nil) {
--		return nil, errors.Wrapf(err, "failed to obtain device public key from OPTEE")
+-	authd.Pubkey, err = m.keyStore.PublicPEM()
 +	if (fileExists(blob_path) == false){
 +		args := []string{"mppubk", key_path}
 +		ret_c, err := run_cmd("secureota", args)
 +		if (ret_c == -1) {
 +			return nil, errors.Wrapf(err, "failed to obtain device public key from OPTEE")
 +		}
-+	}else {
-+		args := []string{"decapblob", blob_path, key_path}
-+		ret_c, err := run_cmd("secureota", args)
++	}
++	args = []string{"decapblob", blob_path, key_path}
++	ret_c, err := run_cmd("secureota", args)
 +        if (ret_c == -1) {
 +                return nil, errors.Wrapf(err, "failed to obtain device public key from OPTEE")
 +        }
- 	}
- 	authd.Pubkey, err = m.keyStore.LoadPublicKey(key_path)
++
++	authd.Pubkey, err = m.keyStore.LoadPublicKey(key_path)
  	if err != nil {
  		return nil, errors.Wrapf(err, "failed to obtain device public key")
  	}
  
 -	tentok := strings.TrimSpace(string(m.tenantToken))
--
- 	// fill tenant token
++        //delete pem encoded key as it is saved in a blob
++        err = os.Remove(key_path)
++        if err != nil {
++                log.Debugf("failed to delete key pem file!\n")
++        }
+ 
++	// fill tenant token
 +	tentok := strings.TrimSpace(string(m.tenantToken))
+ 	log.Debugf("tenant token: %s", tentok)
+ 
+-	// fill tenant token
  	authd.TenantToken = string(tentok)
+-
+ 	log.Debugf("authorization data: %v", authd)
  
  	reqdata, err := authd.ToBytes()
-@@ -133,8 +146,8 @@ func (m *MenderAuthManager) MakeAuthRequest() (*client.AuthRequest, error) {
+@@ -129,7 +155,12 @@ func (m *MenderAuthManager) MakeAuthRequest() (*client.AuthRequest, error) {
  	}
  
  	// generate signature
--	var der_signature_path = "/var/lib/mender/mp.pem"
--	sigSize, err := run_cmd("signmpprivk", authd.TenantToken, der_signature_path)
+-	sig, err := m.keyStore.Sign(reqdata)
 +	args = []string{"signmpprivk", authd.TenantToken, der_signature_path}
 +	sigSize, err := run_cmd("secureota", args)
- 	if (sigSize == -1 || err != nil) {
- 		return nil, errors.Wrapf(err, "failed to sign auth request in OPTEE")
- 	}
-@@ -143,6 +156,11 @@ func (m *MenderAuthManager) MakeAuthRequest() (*client.AuthRequest, error) {
++	if (sigSize == -1 || err != nil) {
++		return nil, errors.Wrapf(err, "failed to sign auth request in OPTEE")
++	}
++	sig, err := m.keyStore.LoadSignature(sigSize, der_signature_path)
+ 	if err != nil {
  		return nil, errors.Wrapf(err, "failed to sign auth request")
  	}
- 
-+	err = os.Remove(key_path)
-+	if err != nil {
-+		log.Debugf("failed to delete key pem file!\n")
-+	}
-+
- 	return &client.AuthRequest{
- 		Data:      reqdata,
- 		Token:     client.AuthToken(tentok),
-@@ -198,16 +216,23 @@ func (m *MenderAuthManager) GenerateKey() error {
+@@ -188,3 +219,25 @@ func (m *MenderAuthManager) GenerateKey() error {
+ 	}
  	return nil
  }
- 
--func run_cmd( command string, auth_str string, file_path string) (int, error) {
--    cmd := exec.Command("secureota", command, string(auth_str), file_path)
++
 +func fileExists(name string) bool {
 +    if _, err := os.Stat(name); err != nil {
 +        if os.IsNotExist(err) {
@@ -105,55 +104,53 @@ index 8e3f4f9..4171ed9 100644
 +	var cmd *exec.Cmd
 +	cmd = exec.Command(script, args...)
 +
-     var stdout, stderr bytes.Buffer
-     cmd.Stdout = &stdout
-     cmd.Stderr = &stderr
--    err := cmd.Run()
--    if err != nil {
--        return -1, NewFatalError(err)
--    }
--
--    outStr := string(stdout.Bytes())
--    return strconv.Atoi(outStr)
--}
-\ No newline at end of file
++    var stdout, stderr bytes.Buffer
++    cmd.Stdout = &stdout
++    cmd.Stderr = &stderr
 +    cmd.Run()
 +	outStr := string(stdout.Bytes())
++
 +    return strconv.Atoi(string(outStr))
 +}
 diff --git a/store/keystore.go b/store/keystore.go
-index b6eba5f..3eb5e07 100644
+index 779d718..b74cb67 100644
 --- a/store/keystore.go
 +++ b/store/keystore.go
-@@ -23,7 +23,7 @@ import (
- 	"io"
- 	"io/ioutil"
- 	"os"
--
-+	"math/big"
- 	"github.com/mendersoftware/log"
- 	"github.com/pkg/errors"
- )
-@@ -155,8 +155,9 @@ func (k *Keystore) LoadPublicKey(key_path string) (string, error) {
- 	if err != nil {
- 		log.Fatal(errors.New("Can not load public key"))
- 	}
-+	trimpublicKey := bytes.Trim(publicKey, "\x00")
- 
--	return string(publicKey), nil
-+	return string(trimpublicKey), nil
+@@ -150,6 +150,16 @@ func (k *Keystore) PublicPEM() (string, error) {
+ 	return buf.String(), nil
  }
  
++func (k *Keystore) LoadPublicKey(key_path string) (string, error) {
++
++	publicKey, err := ioutil.ReadFile(key_path)
++	if err != nil {
++		log.Fatal(errors.New("Can not load public key"))
++	}
++	trimpublicKey := bytes.Trim(publicKey, "\x00")
++	return string(trimpublicKey), nil
++}
++
  func (k *Keystore) Sign(data []byte) ([]byte, error) {
-@@ -191,6 +192,11 @@ func loadFromPem(in io.Reader) (*rsa.PrivateKey, error) {
+ 	hash := crypto.SHA256
+ 	h := hash.New()
+@@ -184,6 +194,20 @@ func loadFromPem(in io.Reader) (*rsa.PrivateKey, error) {
  	return key, nil
  }
  
-+type ECDSASignature struct {
-+    R, S *big.Int
++func (k *Keystore) LoadSignature(sigSize int, signature_path string) ([]byte, error) {
++	der := make([]byte, sigSize)
++
++	file, err := os.Open(signature_path)
++	if err != nil {
++		return nil, errors.New("Error while opening file")
++	}
++	_, err = file.Read(der)
++	if err != nil {
++		log.Fatal(err)
++	}
++	return der, nil
 +}
 +
-+
- func (k *Keystore) LoadSignature(sigSize int, signature_path string) ([]byte, error) {
- 	der := make([]byte, sigSize)
+ func saveToPem(out io.Writer, key *rsa.PrivateKey) error {
+ 	data := x509.MarshalPKCS1PrivateKey(key)
  
