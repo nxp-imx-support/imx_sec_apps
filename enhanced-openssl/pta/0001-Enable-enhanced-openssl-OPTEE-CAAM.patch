@@ -1,0 +1,2719 @@
+commit 8925fec9e519405ec5245c561d4a517f3e079ab6
+Author: Andreea Proca <andreea-brandusa.proca@nxp.com>
+Date:   Fri Mar 20 21:31:20 2020 +0200
+
+    PTA files for Enhanced Openssl operations.
+
+diff --git a/0001_Enable-enhanced-openssl-OPTEE-CAAM.patch b/0001_Enable-enhanced-openssl-OPTEE-CAAM.patch
+new file mode 100644
+index 0000000..4bc1174
+--- /dev/null
++++ b/0001_Enable-enhanced-openssl-OPTEE-CAAM.patch
+@@ -0,0 +1,1358 @@
++commit 4f8ba4164565d556ad5348356bc139337fea9752
++Author: Andreea Proca <andreea-brandusa.proca@nxp.com>
++Date:   Fri Mar 20 21:23:26 2020 +0200
++
++    PTA files for Enhanced Openssl operations.
++
++diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
++index e8b5aba..b6f8bc1 100644
++--- a/core/arch/arm/plat-imx/crypto_conf.mk
+++++ b/core/arch/arm/plat-imx/crypto_conf.mk
++@@ -39,6 +39,9 @@ $(call force, CFG_CRYPTO_BLOB_HW,y)
++ 
++ ifeq ($(filter y, $(CFG_MX6UL)$(CFG_MX7)$(CFG_MX8MM)$(CFG_MX8M)),y)
++ # Definition of the Asymmetric Cipher supported by HW
+++$(call force, CFG_SIGN_PTA, y)
+++$(call force, CFG_GENERATE_PTA, y)
+++$(call force, CFG_DECRYPT_PTA, y)
++ $(call force, CFG_CRYPTO_RSA_HW,y)
++ $(call force, CFG_CRYPTO_DSA_HW,n)
++ $(call force, CFG_CRYPTO_DH_HW,n)
++@@ -63,6 +66,7 @@ endif
++ 
++ # Definition of the HASH Algorithm supported by all i.MX
++ ifeq ($(CFG_CRYPTO_HASH_HW), y)
+++CFG_HASH_PTA ?= y
++ CFG_CRYPTO_HASH_HW_MD5    ?= y
++ CFG_CRYPTO_HASH_HW_SHA1   ?= y
++ CFG_CRYPTO_HASH_HW_SHA224 ?= y
++diff --git a/core/arch/arm/plat-imx/pta/pta_decrypt_mx.c b/core/arch/arm/plat-imx/pta/pta_decrypt_mx.c
++new file mode 100755
++index 0000000..ea15497
++--- /dev/null
+++++ b/core/arch/arm/plat-imx/pta/pta_decrypt_mx.c
++@@ -0,0 +1,264 @@
+++// SPDX-License-Identifier: BSD-2-Clause
+++/**
+++* @copyright 2019 NXP
+++*
+++* @file    pta_decrypt_mx.c
+++*
+++* @brief   Pseudo Trusted Application.
+++*			RSA Decrypt functionality
+++*/
+++
+++#include <kernel/pseudo_ta.h>
+++
+++/* Standard includes */
+++#include <stdlib.h>
+++#include <string.h>
+++
+++/* Library kernel includes */
+++#include <kernel/pseudo_ta.h>
+++
+++/* Library libutee includes */
+++#include <pta_decrypt.h>
+++#include <pta_help.h>
+++
+++/* Library tee includes */
+++#include <tee_api_types.h>
+++
+++/* Library crypto includes */
+++#include <crypto_extension.h>
+++#include <libimxcrypt_acipher.h>
+++
+++/* Library crypto includes */
+++#include <crypto/crypto.h>
+++
+++/* Global includes */
+++#include <tee_api_defines.h>
+++
+++/**
+++ * @brief   Call the Cryptographic Extension API to decrypt
+++ *          data using RSA key and rsa_nopad algorithm
+++ *
+++ *  Params are:
+++ *    Input:
+++ *     params[0].value.a = NoNe
+++ *     params[1].memref  = Encrypted message
+++ *     params[2].memref  = Reference to RSA key
+++ *    Output:
+++ *     params[3].memref  = Decrypted message
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ * 
+++ */
+++
+++static TEE_Result decrypt_rsa_nopad(uint32_t param_types,
+++        TEE_Param params[4])
+++{
+++    TEE_Result res = TEE_SUCCESS;
+++    SK_RSA_KEY *rsa_key;
+++    size_t msg_len, decr_msg_len;
+++    struct rsa_keypair key;
+++	uint8_t *msg, *decr_msg;
+++    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
+++						   TEE_PARAM_TYPE_MEMREF_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INOUT);
+++
+++	if (param_types != exp_param_types) {
+++		res = TEE_ERROR_BAD_PARAMETERS;
+++		goto out;
+++	}
+++
+++    /*Call the iMX Crypto API for RSA Decrypt*/
+++    msg = params[1].memref.buffer;
+++    msg_len = params[1].memref.size;
+++    decr_msg = params[3].memref.buffer;
+++
+++    rsa_key = malloc(sizeof(SK_RSA_KEY));
+++    if (rsa_key == NULL) {
+++        return TEE_ERROR_OUT_OF_MEMORY;
+++    }
+++    memcpy(rsa_key, params[2].memref.buffer, params[2].memref.size);
+++
+++    key.e = crypto_bignum_allocate(rsa_key->pub_size * 8);
+++    key.d = crypto_bignum_allocate(rsa_key->priv_size * 8);
+++    key.n = crypto_bignum_allocate(rsa_key->mod_size * 8);
+++
+++    res = crypto_bignum_bin2bn(rsa_key->pub_exp, rsa_key->pub_size,
+++                key.e);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++    res = crypto_bignum_bin2bn(rsa_key->priv_exp, rsa_key->priv_size,
+++                key.d);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++    res = crypto_bignum_bin2bn(rsa_key->modulus, rsa_key->mod_size,
+++                key.n);
+++    if (res != TEE_SUCCESS)
+++	  	goto out;
+++    res = crypto_acipher_rsanopad_decrypt(&key, msg, msg_len, decr_msg,
+++                &decr_msg_len);
+++    DMSG("Print rsa decr %x:\n", res);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++
+++    params[3].memref.buffer = decr_msg;
+++    params[3].memref.size = decr_msg_len;
+++out:
+++    crypto_bignum_free(key.e);
+++    crypto_bignum_free(key.d);
+++    crypto_bignum_free(key.n);
+++    return res;
+++}
+++
+++/**
+++ * @brief   Call the Cryptographic Extension API to decrypt
+++ *          data using RSA key and rsaes_pkcs algorithm
+++ *
+++ *  Params are:
+++ *    Inputs:
+++ *     params[0]         = NoNe
+++ *     params[1].memref  = Message to Decrypt
+++ *     params[2].memref  = Refference to ECC key
+++ *     params[3].memref  = Decrypted message
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ */
+++
+++static TEE_Result decrypt_rsaes(uint32_t param_types,
+++        TEE_Param params[4])
+++{
+++    /* Not supported yet */
+++      TEE_Result res = TEE_SUCCESS;
+++    SK_RSA_KEY *rsa_key;
+++    size_t msg_len, decr_msg_len;
+++    struct rsa_keypair key;
+++	uint8_t *msg, *decr_msg;
+++    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
+++						   TEE_PARAM_TYPE_MEMREF_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INOUT);
+++
+++	if (param_types != exp_param_types) {
+++		res = TEE_ERROR_BAD_PARAMETERS;
+++		goto out;
+++	}
+++
+++    /*Call the iMX Crypto API for RSA Decryption*/
+++    msg = params[1].memref.buffer;
+++    msg_len = params[1].memref.size;
+++    decr_msg = params[3].memref.buffer;
+++
+++    rsa_key = malloc(sizeof(SK_RSA_KEY));
+++    memcpy(rsa_key, params[2].memref.buffer, params[2].memref.size);
+++
+++    key.e = crypto_bignum_allocate(rsa_key->pub_size * 8);
+++    key.d = crypto_bignum_allocate(rsa_key->priv_size * 8);
+++    key.n = crypto_bignum_allocate(rsa_key->mod_size * 8);
+++
+++    res = crypto_bignum_bin2bn(rsa_key->pub_exp, rsa_key->pub_size,
+++                key.e);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++    res = crypto_bignum_bin2bn(rsa_key->priv_exp, rsa_key->priv_size,
+++                key.d);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++    res = crypto_bignum_bin2bn(rsa_key->modulus, rsa_key->mod_size,
+++                key.n);
+++    if (res != TEE_SUCCESS)
+++	  	goto out;
+++    res = crypto_acipher_rsanopad_decrypt(&key, msg, msg_len, decr_msg,
+++                &decr_msg_len);
+++    DMSG("Print rsa decr %x:\n", res);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++
+++    params[3].memref.buffer = decr_msg;
+++    params[3].memref.size = decr_msg_len;
+++    
+++out:
+++    crypto_bignum_free(key.e);
+++    crypto_bignum_free(key.d);
+++    crypto_bignum_free(key.n);
+++    return res;
+++}
+++
+++
+++/**
+++ * @brief   Open Session function verifying that only a TA opened
+++ *          the current PTA
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ * @param[in]  sess_ctx       Session Identifier
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
+++ */
+++static TEE_Result open_session(uint32_t param_types __unused,
+++        TEE_Param pParams[TEE_NUM_PARAMS] __unused,
+++        void **sess_ctx)
+++{
+++    struct tee_ta_session *sess;
+++
+++    /* Check if the session is opened by a TA */
+++    sess = tee_ta_get_calling_session();
+++    if (!sess)
+++        return TEE_ERROR_ACCESS_DENIED;
+++
+++    *sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
+++
+++    return TEE_SUCCESS;
+++}
+++
+++/**
+++ * @brief   Called when a pseudo TA is invoked.
+++ *
+++ * @param[in]  sess_ctx       Session Identifier
+++ * @param[in]  cmd_id         Command ID
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ */
+++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
+++        uint32_t cmd_id, uint32_t param_types,
+++        TEE_Param params[TEE_NUM_PARAMS])
+++{
+++    switch (cmd_id) {
+++    case PTA_DECRYPT_RSA_NOPAD:
+++        return decrypt_rsa_nopad(param_types, params);
+++    case PTA_DECRYPT_RSAES:
+++        return decrypt_rsaes(param_types, params);
+++    default:
+++        return TEE_ERROR_BAD_PARAMETERS;
+++    }
+++}
+++
+++pseudo_ta_register(
+++        .uuid = PTA_DECRYPT_UUID,
+++        .name = DECRYPT_PTA_NAME,
+++        .flags = PTA_DEFAULT_FLAGS,
+++        .open_session_entry_point = open_session,
+++        .invoke_command_entry_point = invokeCommandEntryPoint);
++\ No newline at end of file
++diff --git a/core/arch/arm/plat-imx/pta/pta_generate.c b/core/arch/arm/plat-imx/pta/pta_generate.c
++new file mode 100755
++index 0000000..081c466
++--- /dev/null
+++++ b/core/arch/arm/plat-imx/pta/pta_generate.c
++@@ -0,0 +1,258 @@
+++// SPDX-License-Identifier: BSD-2-Clause
+++/**
+++* @copyright 2019 NXP
+++*
+++* @file    pta_generate_mx.c
+++*
+++* @brief   Pseudo Trusted Application.
+++*			RSA/ECC Key generation functionality
+++*/
+++
+++#include <kernel/pseudo_ta.h>
+++
+++/* Standard includes */
+++#include <stdlib.h>
+++#include <string.h>
+++#include <trace.h>
+++
+++/* Library kernel includes */
+++#include <kernel/pseudo_ta.h>
+++
+++/* Library libutee includes */
+++#include <pta_sign.h>
+++#include <pta_generate.h>
+++
+++/* Library tee includes */
+++#include <tee_api_types.h>
+++
+++/* Library crypto includes */
+++#include <crypto_extension.h>
+++#include <libimxcrypt_acipher.h>
+++
+++/* Library crypto includes */
+++#include <crypto/crypto.h>
+++
+++/* Global includes */
+++#include <tee_api_defines.h>
+++
+++/* PTA Name */
+++#define GENERATE_PTA_NAME "generate.pta"
+++
+++
+++/**
+++ * @brief  Generates an EC key using libimxcrypt
+++ *          
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ * In/Out params:
+++ * param#0 : value a : size of the key in bits
+++ * param#0 : value b : size of the priv value Y in bytes
+++ * param#1 : memref to ecc pub point
+++ * param#2 : memref to ecc private value
+++ * 
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
+++ */
+++static TEE_Result generate_ec_key(uint32_t param_types,
+++	TEE_Param params[TEE_NUM_PARAMS]) {
+++	TEE_Result res = TEE_SUCCESS;
+++	struct ecc_keypair key;
+++	struct ecc_public_key ecc_pub_key;
+++	uint32_t exp_param_types;
+++	size_t key_size, pub_valx_size;
+++	uint8_t *ec_pub_point;
+++	DMSG("PTA Generate EC function %x", res);
+++
+++	exp_param_types = TEE_PARAM_TYPES(
+++		TEE_PARAM_TYPE_VALUE_INOUT,
+++		TEE_PARAM_TYPE_MEMREF_INOUT,
+++		TEE_PARAM_TYPE_MEMREF_OUTPUT,
+++		TEE_PARAM_TYPE_NONE);
+++	
+++	if (param_types != exp_param_types)
+++		return TEE_ERROR_BAD_PARAMETERS;
+++
+++	key_size = params[0].value.a;
+++	ec_pub_point = params[1].memref.buffer;
+++
+++	res = crypto_acipher_alloc_ecc_public_key(&ecc_pub_key, key_size);
+++	if (res != TEE_SUCCESS)
+++		return res;
+++
+++	if (key_size == 256) {
+++		ecc_pub_key.curve = TEE_ECC_CURVE_NIST_P256;
+++	} else if (key_size == 384) {
+++		ecc_pub_key.curve = TEE_ECC_CURVE_NIST_P384;
+++	}
+++
+++	DMSG("Alloc EC %x with size %x", res, key_size);
+++	res = crypto_acipher_alloc_ecc_keypair(&key, key_size);
+++	if (res != TEE_SUCCESS)
+++		return res;
+++
+++	key.curve = ecc_pub_key.curve;
+++	key.x = ecc_pub_key.x;
+++	key.y = ecc_pub_key.y;
+++	DMSG("Generate EC %d with size %x", ecc_pub_key.curve, key_size);
+++
+++	res = crypto_acipher_gen_ecc_key(&key);
+++	if (res != TEE_SUCCESS)
+++		return TEE_ERROR_ACCESS_CONFLICT;
+++
+++	DMSG("Generated EC %x with size %x", res, key_size);
+++	// copy ec pub point from key to TA buffer
+++
+++	pub_valx_size = crypto_bignum_num_bytes(key.x);
+++	crypto_bignum_bn2bin(key.x, ec_pub_point + 1);
+++	crypto_bignum_bn2bin(key.y, ec_pub_point + pub_valx_size + 1);
+++	crypto_bignum_bn2bin(key.d, params[2].memref.buffer);
+++
+++	params[1].memref.size = pub_valx_size;
+++	params[0].value.b = crypto_bignum_num_bytes(key.y);
+++	params[2].memref.size = crypto_bignum_num_bytes(key.d);
+++
+++	
+++	crypto_acipher_free_ecc_public_key(&ecc_pub_key);
+++	crypto_bignum_free(key.d);
+++
+++	return res;
+++}
+++
+++/**
+++ * @brief  Generates a RSA key pair using libimxcrypt
+++ *          
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ * Input params:
+++ * param#0 : value a : size of the key in bits
+++ * In/Out params:
+++ * param#1 : memref to modulus
+++ * param#2 : memref to public exponent
+++ * param#3: memref to RSA private exponent
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
+++ */
+++
+++static TEE_Result generate_rsa_key(uint32_t param_types,
+++	TEE_Param params[TEE_NUM_PARAMS]) {
+++	TEE_Result res = TEE_SUCCESS;
+++	struct rsa_keypair key;
+++	struct rsa_public_key rsa_key_pub;
+++	uint32_t key_size, pub_key_size;
+++	uint32_t exp_param_types;
+++	uint8_t *pub_key;
+++
+++	exp_param_types = TEE_PARAM_TYPES(
+++		TEE_PARAM_TYPE_VALUE_INPUT,
+++		TEE_PARAM_TYPE_MEMREF_INOUT,
+++		TEE_PARAM_TYPE_MEMREF_INOUT,
+++		TEE_PARAM_TYPE_MEMREF_INOUT);
+++
+++	if (param_types != exp_param_types)
+++		return TEE_ERROR_BAD_PARAMETERS;
+++
+++	key_size = params[0].value.a;
+++	pub_key_size = params[2].memref.size * 8;
+++	pub_key = params[2].memref.buffer;
+++	/* CRYPTO API */
+++	res = crypto_acipher_alloc_rsa_keypair(&key, key_size);
+++	if (res != TEE_SUCCESS)
+++		return res;
+++
+++	res = crypto_acipher_alloc_rsa_public_key(&rsa_key_pub, pub_key_size);
+++	DMSG("RES: %x", res);
+++	if (res != TEE_SUCCESS)
+++		return res;
+++	
+++	res = crypto_bignum_bin2bn(pub_key, pub_key_size / 8, rsa_key_pub.e);
+++	DMSG("RES: %x", res);
+++	if (res != TEE_SUCCESS)
+++		return res;
+++
+++	key.e = rsa_key_pub.e;
+++	res = crypto_acipher_gen_rsa_key(&key, key_size);
+++	DMSG("RES: %x", res);
+++	if (res != TEE_SUCCESS)
+++		return res;
+++
+++	/*modulus */
+++	crypto_bignum_bn2bin(key.n, params[1].memref.buffer);
+++	params[1].memref.size = crypto_bignum_num_bytes(key.n);
+++	/*private exponent */
+++	crypto_bignum_bn2bin(key.d, params[3].memref.buffer);
+++	params[3].memref.size = crypto_bignum_num_bytes(key.d);
+++	
+++	//free key
+++	crypto_acipher_free_rsa_public_key(&rsa_key_pub);
+++	crypto_bignum_free(key.n);
+++	crypto_bignum_free(key.d);
+++
+++	return res;
+++}
+++
+++/**
+++ * @brief   Open Session function verifying that only a TA opened
+++ *          the current PTA
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ * @param[in]  sess_ctx       Session Identifier
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
+++ */
+++static TEE_Result open_session(uint32_t param_types __unused,
+++		TEE_Param pParams[TEE_NUM_PARAMS] __unused,
+++		void **sess_ctx)
+++{
+++	struct tee_ta_session *sess;
+++
+++	/* Check if the session is opened by a TA */
+++	sess = tee_ta_get_calling_session();
+++	if (!sess)
+++		return TEE_ERROR_ACCESS_DENIED;
+++
+++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
+++
+++	return TEE_SUCCESS;
+++}
+++
+++/**
+++ * @brief   Called when a pseudo TA is invoked.
+++ *
+++ * @param[in]  sess_ctx       Session Identifier
+++ * @param[in]  cmd_id         Command ID
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ */
+++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
+++        uint32_t cmd_id, uint32_t param_types,
+++        TEE_Param params[TEE_NUM_PARAMS])
+++{
+++    switch (cmd_id) {
+++    case PTA_GENERATE_RSAKEY_CMD:
+++		DMSG("RES: %d", cmd_id);
+++        return generate_rsa_key(param_types, params);
+++	case PTA_GENERATE_ECKEY_CMD:
+++		DMSG("RES: %d", cmd_id);
+++        return generate_ec_key(param_types, params);
+++    default:
+++        return TEE_ERROR_BAD_PARAMETERS;
+++    }
+++}
+++
+++
+++pseudo_ta_register(
+++		.uuid = PTA_GENERATE_PTA_UUID,
+++		.name = GENERATE_PTA_NAME,
+++		.flags = PTA_DEFAULT_FLAGS,
+++		.open_session_entry_point = open_session,
+++		.invoke_command_entry_point = invokeCommandEntryPoint);
++diff --git a/core/arch/arm/plat-imx/pta/pta_hash_mx.c b/core/arch/arm/plat-imx/pta/pta_hash_mx.c
++new file mode 100755
++index 0000000..0000ef3
++--- /dev/null
+++++ b/core/arch/arm/plat-imx/pta/pta_hash_mx.c
++@@ -0,0 +1,165 @@
+++// SPDX-License-Identifier: BSD-2-Clause
+++/**
+++* @copyright 2019 NXP
+++*
+++* @file    pta_hash_mx.c
+++*
+++* @brief   Pseudo Trusted Application.
+++*			Uses SKM_SHA to generate hash of a message
+++*/
+++
+++/* Standard includes */
+++#include <stdlib.h>
+++#include <string.h>
+++
+++/* Library kernel includes */
+++#include <kernel/pseudo_ta.h>
+++
+++/* Library libutee includes */
+++#include <pta_hash.h>
+++
+++/* Library tee includes */
+++#include <tee_api_types.h>
+++
+++/* Library crypto includes */
+++#include <crypto_extension.h>
+++#include <libimxcrypt_hash.h>
+++#include <libimxcrypt.h>
+++
+++/* Library crypto includes */
+++#include <crypto/crypto.h>
+++
+++/* Global includes */
+++#include <tee_api_defines.h>
+++
+++/* PTA Name */
+++#define HASH_PTA_NAME "hash.pta"
+++
+++/**
+++ * @brief   Call the Cryptographic Extension API to digest
+++ *          data
+++ *
+++ *  Params are:
+++ *    Input:
+++ *     params[0].value.a = Cryptographic Algorithm
+++ * 	   params[0].value.b = Digest Size
+++ *     params[1].memref  = Message to do Hash
+++ *	  Output:
+++ *     params[2].memref  = Output Hash
+++ * 	   params[3].memref = NONE
+++ * 	   params[4].memref = NONE
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ */
+++
+++static TEE_Result digest(uint32_t param_types,
+++        TEE_Param params[4]) {
+++		TEE_Result res = TEE_SUCCESS;
+++		uint32_t algorithm;
+++		uint8_t *message, *digest;
+++		size_t msg_len, digest_size;
+++
+++		void *ctx = NULL;
+++		uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+++			TEE_PARAM_TYPE_MEMREF_INPUT,
+++			TEE_PARAM_TYPE_MEMREF_INOUT,
+++			TEE_PARAM_TYPE_NONE);
+++		if (param_types != exp_param_types) {
+++			res = TEE_ERROR_BAD_PARAMETERS;
+++			goto out;
+++		}
+++		/*unpack parameters*/
+++		algorithm = params[0].value.a;
+++		digest_size = params[0].value.b;
+++		message = params[1].memref.buffer;
+++		msg_len = params[1].memref.size;
+++		digest = params[2].memref.buffer;
+++		/* call libimxcrypt hash functions */
+++		res = crypto_hash_alloc_ctx(&ctx, algorithm);
+++		if (res != TEE_SUCCESS)
+++			goto out;
+++		res = crypto_hash_init(ctx, algorithm);
+++		if (res != TEE_SUCCESS)
+++			goto out;
+++		res = crypto_hash_update(ctx, algorithm, 
+++				message, msg_len);
+++		if (res != TEE_SUCCESS)
+++			goto out;
+++		res = crypto_hash_final(ctx, algorithm, digest, 
+++			digest_size);
+++		if (res != TEE_SUCCESS)
+++			goto out;
+++out:
+++	crypto_hash_free_ctx(ctx, algorithm);
+++	return res;
+++}
+++
+++/**
+++ * @brief   Open Session function verifying that only a TA opened
+++ *          the current PTA
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ * @param[in]  sess_ctx       Session Identifier
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
+++ */
+++static TEE_Result open_session(uint32_t param_types __unused,
+++		TEE_Param pParams[TEE_NUM_PARAMS] __unused,
+++		void **sess_ctx)
+++{
+++	struct tee_ta_session *sess;
+++
+++	/* Check if the session is opened by a TA */
+++	sess = tee_ta_get_calling_session();
+++	if (!sess)
+++		return TEE_ERROR_ACCESS_DENIED;
+++
+++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
+++
+++	return TEE_SUCCESS;
+++}
+++
+++/**
+++ * @brief   Called when a pseudo TA is invoked.
+++ *
+++ * @param[in]  sess_ctx       Session Identifier
+++ * @param[in]  cmd_id         Command ID
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ */
+++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
+++		uint32_t cmd_id, uint32_t param_types,
+++		TEE_Param params[TEE_NUM_PARAMS])
+++{
+++	switch (cmd_id) {
+++	case PTA_HASH_CMD_DIGEST:
+++		return digest(param_types, params);
+++	default:
+++		return TEE_ERROR_BAD_PARAMETERS;
+++	}
+++}
+++
+++
+++pseudo_ta_register(
+++		.uuid = PTA_HASH_PTA_UUID,
+++		.name = HASH_PTA_NAME,
+++		.flags = PTA_DEFAULT_FLAGS,
+++		.open_session_entry_point = open_session,
+++		.invoke_command_entry_point = invokeCommandEntryPoint);
++\ No newline at end of file
++diff --git a/core/arch/arm/plat-imx/pta/pta_help_mx.c b/core/arch/arm/plat-imx/pta/pta_help_mx.c
++new file mode 100755
++index 0000000..d75f6fe
++--- /dev/null
+++++ b/core/arch/arm/plat-imx/pta/pta_help_mx.c
++@@ -0,0 +1,51 @@
+++// SPDX-License-Identifier: BSD-2-Clause
+++/**
+++* @copyright 2019 NXP
+++*
+++* @file    pta_help_mx.c
+++*
+++* @brief   Pseudo Trusted Application.
+++*/
+++
+++
+++/* Standard includes */
+++#include <stdlib.h>
+++#include <string.h>
+++
+++/* Library kernel includes */
+++#include <kernel/pseudo_ta.h>
+++
+++/* Library libutee includes */
+++#include <pta_help.h>
+++
+++/* Library tee includes */
+++#include <tee_api_types.h>
+++
+++/* Library crypto includes */
+++#include <crypto_extension.h>
+++
+++/* Library crypto includes */
+++#include <crypto/crypto.h>
+++
+++/* Global includes */
+++#include <tee_api_defines.h>
+++
+++SK_ATTRIBUTE *TA_GetSKAttr(SK_ATTRIBUTE_TYPE type, SK_ATTRIBUTE *attrs,
+++			   uint32_t attr_count)
+++{
+++	size_t i;
+++	SK_ATTRIBUTE *match_attr = NULL;
+++
+++	for (i = 0; i < attr_count; i++) {
+++		if (type == attrs[i].type) {
+++			match_attr = &attrs[i];
+++			break;
+++		}
+++	}
+++
+++	if (match_attr)
+++		DMSG("Match Attribute - value: %p, valueLen: %08x!\n",
+++			match_attr->value, match_attr->valueLen);
+++
+++	return match_attr;
+++}
++diff --git a/core/arch/arm/plat-imx/pta/pta_sign_mx.c b/core/arch/arm/plat-imx/pta/pta_sign_mx.c
++new file mode 100755
++index 0000000..a8da011
++--- /dev/null
+++++ b/core/arch/arm/plat-imx/pta/pta_sign_mx.c
++@@ -0,0 +1,275 @@
+++/**
+++* SPDX-License-Identifier: BSD-2-Clause
+++* @copyright 2019 NXP
+++*
+++* @file    pta_sign_mx.c
+++*
+++* @brief   Pseudo Trusted Application.
+++*			RSA/ECC sign functionality
+++*/
+++
+++#include <kernel/pseudo_ta.h>
+++
+++/* Standard includes */
+++#include <stdlib.h>
+++#include <string.h>
+++
+++/* Library kernel includes */
+++#include <kernel/pseudo_ta.h>
+++
+++/* Library libutee includes */
+++#include <pta_sign.h>
+++#include <pta_help.h>
+++
+++/* Library tee includes */
+++#include <tee_api_types.h>
+++
+++/* Library crypto includes */
+++#include <crypto_extension.h>
+++#include <libimxcrypt_acipher.h>
+++
+++/* Library crypto includes */
+++#include <crypto/crypto.h>
+++
+++/* Global includes */
+++#include <tee_api_defines.h>
+++
+++/* PTA Name */
+++#define SIGN_PTA_NAME "sign.pta"
+++
+++/**
+++ * @brief   Call the Cryptographic Extension API to sign
+++ *          data using RSA key
+++ *
+++ *  Params are:
+++ *    Inputs:
+++ *     params[0].value.a = 
+++ *     params[0].value.b = Cryptographic Algorithm
+++ *     params[1].memref  = Message to Sign
+++ *     params[2].memref  = Reference to RSA key
+++ *     params[3].memref  = Signature
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ * 
+++ */
+++
+++static TEE_Result sign_rsa(uint32_t param_types,
+++        TEE_Param params[4])
+++{
+++    TEE_Result res = TEE_SUCCESS;
+++    SK_RSA_KEY *rsa_key;
+++    uint32_t algo, salt_len = 20;
+++    size_t sig_len, msg_len;
+++    struct rsa_keypair key;
+++	  uint8_t *msg, *sig;
+++    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INOUT);
+++
+++	if (param_types != exp_param_types) {
+++		res = TEE_ERROR_BAD_PARAMETERS;
+++		goto out;
+++	}
+++
+++    /*Call the iMX Crypto API for RSA Sign*/
+++    algo = params[0].value.b;
+++    msg = params[1].memref.buffer;
+++    msg_len = params[1].memref.size;
+++    sig = params[3].memref.buffer;
+++
+++    rsa_key = malloc(sizeof(SK_RSA_KEY));
+++    if (rsa_key == NULL) {
+++        return TEE_ERROR_OUT_OF_MEMORY;
+++    }
+++    memcpy(rsa_key, params[2].memref.buffer, params[2].memref.size);
+++
+++    key.e = crypto_bignum_allocate(rsa_key->pub_size * 8);
+++    key.d = crypto_bignum_allocate(rsa_key->priv_size * 8);
+++    key.n = crypto_bignum_allocate(rsa_key->mod_size * 8);
+++
+++    res = crypto_bignum_bin2bn(rsa_key->pub_exp, rsa_key->pub_size,
+++                key.e);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++    res = crypto_bignum_bin2bn(rsa_key->priv_exp, rsa_key->priv_size,
+++                key.d);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++    res = crypto_bignum_bin2bn(rsa_key->modulus, rsa_key->mod_size,
+++                key.n);
+++    if (res != TEE_SUCCESS)
+++	  	goto out;
+++
+++    res = crypto_acipher_rsassa_sign(algo, &key, salt_len, msg,
+++                msg_len, sig, &sig_len);
+++    DMSG("Print rsa sign %x:\n", res);
+++    if (res != TEE_SUCCESS)
+++		  goto out;
+++
+++    params[3].memref.buffer = sig;
+++    
+++out:
+++    free(rsa_key);
+++    crypto_bignum_free(key.e);
+++    crypto_bignum_free(key.d);
+++    crypto_bignum_free(key.n);
+++    return res;
+++}
+++
+++
+++/**
+++ * @brief   Call the Cryptographic Extension API to sign
+++ *          data using ECC key
+++ *
+++ *  Params are:
+++ *    Inputs:
+++ *     params[0].value.a = 
+++ *     params[0].value.b = Cryptographic Algorithm
+++ *     params[1].memref  = Message to Sign
+++ *     params[2].memref  = Refference to ECC key
+++ *     params[3].memref  = Signature
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ */
+++
+++static TEE_Result sign_ecc(uint32_t param_types,
+++        TEE_Param params[4])
+++{
+++    TEE_Result res = TEE_SUCCESS;
+++    uint32_t algo;
+++    uint8_t *sig, *msg;
+++    size_t sig_len, msg_len;
+++    struct ecc_keypair key;
+++    SK_ECC_KEY *ecc_key;
+++    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_INPUT,
+++						   TEE_PARAM_TYPE_MEMREF_OUTPUT);
+++	if (param_types != exp_param_types) {
+++		res = TEE_ERROR_BAD_PARAMETERS;
+++		goto out;
+++	}
+++
+++    /*Call the iMX Crypto API for EC Sign*/
+++    algo = params[0].value.b;
+++    msg = params[1].memref.buffer;
+++    msg_len = params[1].memref.size;
+++    sig = params[3].memref.buffer;
+++    ecc_key = malloc(sizeof(SK_ECC_KEY));
+++    if (ecc_key == NULL) {
+++        return TEE_ERROR_OUT_OF_MEMORY;
+++    }
+++    memcpy(ecc_key, params[2].memref.buffer, params[2].memref.size);
+++
+++    key.x = crypto_bignum_allocate(ecc_key->x_size * 8);
+++    key.y = crypto_bignum_allocate(ecc_key->y_size * 8);
+++    key.d = crypto_bignum_allocate(ecc_key->priv_size * 8);
+++    key.curve = ecc_key->curve;
+++    res = crypto_bignum_bin2bn(ecc_key->pub_x, ecc_key->x_size,
+++                key.x);
+++    if (res != TEE_SUCCESS)
+++		goto out;
+++    res = crypto_bignum_bin2bn(ecc_key->pub_y, ecc_key->y_size,
+++                key.y);
+++    if (res != TEE_SUCCESS)
+++		goto out;
+++    res = crypto_bignum_bin2bn(ecc_key->priv_val, ecc_key->priv_size,
+++                key.d);
+++    if (res != TEE_SUCCESS)
+++		goto out;
+++
+++    res = crypto_acipher_ecc_sign(algo, &key, msg, msg_len, sig, &sig_len);
+++    if (res != TEE_SUCCESS) 
+++        goto out;
+++  
+++    params[3].memref.buffer = sig;
+++    params[3].memref.size = sig_len;
+++out:
+++    free(ecc_key);
+++    crypto_bignum_free(key.x);
+++    crypto_bignum_free(key.y);
+++    crypto_bignum_free(key.d);
+++    return res;
+++}
+++
+++
+++/**
+++ * @brief   Open Session function verifying that only a TA opened
+++ *          the current PTA
+++ *
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ * @param[in]  sess_ctx       Session Identifier
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
+++ */
+++static TEE_Result open_session(uint32_t param_types __unused,
+++        TEE_Param pParams[TEE_NUM_PARAMS] __unused,
+++        void **sess_ctx)
+++{
+++    struct tee_ta_session *sess;
+++
+++    /* Check if the session is opened by a TA */
+++    sess = tee_ta_get_calling_session();
+++    if (!sess)
+++        return TEE_ERROR_ACCESS_DENIED;
+++
+++    *sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
+++
+++    return TEE_SUCCESS;
+++}
+++
+++/**
+++ * @brief   Called when a pseudo TA is invoked.
+++ *
+++ * @param[in]  sess_ctx       Session Identifier
+++ * @param[in]  cmd_id         Command ID
+++ * @param[in]  param_types    TEE parameters
+++ * @param[in]  params         Buffer parameters
+++ *
+++ * @retval TEE_SUCCESS                 Success
+++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
+++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
+++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
+++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+++ * @retval TEE_ERROR_GENERIC           Generic error
+++ */
+++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
+++        uint32_t cmd_id, uint32_t param_types,
+++        TEE_Param params[TEE_NUM_PARAMS])
+++{
+++    switch (cmd_id) {
+++    case PTA_SIGN_RSA_DIGEST:
+++        DMSG("Ready to RSA sign: %x", cmd_id);
+++        return sign_rsa(param_types, params);
+++    case PTA_SIGN_ECC_DIGEST:
+++        return sign_ecc(param_types, params);
+++    default:
+++        return TEE_ERROR_BAD_PARAMETERS;
+++    }
+++}
+++
+++pseudo_ta_register(
+++        .uuid = PTA_SIGN_UUID,
+++        .name = SIGN_PTA_NAME,
+++        .flags = PTA_DEFAULT_FLAGS,
+++        .open_session_entry_point = open_session,
+++        .invoke_command_entry_point = invokeCommandEntryPoint);
++\ No newline at end of file
++diff --git a/core/arch/arm/plat-imx/pta/sub.mk b/core/arch/arm/plat-imx/pta/sub.mk
++new file mode 100644
++index 0000000..c8f6893
++--- /dev/null
+++++ b/core/arch/arm/plat-imx/pta/sub.mk
++@@ -0,0 +1,4 @@
+++srcs-$(CFG_SIGN_PTA) += pta_sign_mx.c
+++srcs-$(CFG_HASH_PTA) += pta_hash_mx.c
+++srcs-$(CFG_GENERATE_PTA) += pta_generate.c
+++srcs-$(CFG_DECRYPT_PTA) += pta_decrypt_mx.c
++diff --git a/lib/libutee/include/pta_decrypt.h b/lib/libutee/include/pta_decrypt.h
++new file mode 100755
++index 0000000..89fcb5c
++--- /dev/null
+++++ b/lib/libutee/include/pta_decrypt.h
++@@ -0,0 +1,76 @@
+++/* SPDX-License-Identifier: BSD-2-Clause */
+++/**
+++ * @copyright 2019 NXP
+++ *
+++ * @file    pta_decrypt.h
+++ *
+++ * @brief   PTA Decrypt interface identification.
+++ */
+++#ifndef __PTA_DECRYPT_H__
+++#define __PTA_DECRYPT_H__
+++
+++/**
+++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
+++ */
+++#define PTA_DECRYPT_UUID { \
+++	0xcf92e9b6, 0xd550, 0x11e9, \
+++	{0xbb, 0x65, 0x2a, 0x2a, 0xe2, 0xdb, 0xcc, 0xe4} }
+++/**
+++ * @brief   PTA Command IDs
+++ */
+++#define PTA_DECRYPT_RSA_NOPAD 1
+++#define PTA_DECRYPT_RSAES 2
+++#define DECRYPT_PTA_NAME "decrypt.pta"
+++
+++typedef struct{
+++	uint8_t *modulus;
+++	uint8_t *pub_exp;
+++	uint8_t *priv_exp;
+++	uint32_t mod_size;
+++	uint32_t pub_size;
+++	uint32_t priv_size;
+++} SK_RSA_KEY;
+++
+++/*
+++ * A type for all the defines.
+++ */
+++typedef uint32_t SK_TYPE;
+++
+++/*
+++ * An Attribute Type.
+++ */
+++typedef SK_TYPE SK_ATTRIBUTE_TYPE;
+++
+++#define SK_ATTR_OBJECT_TYPE		0 /* The object type (Mandatory in Create) */
+++#define SK_ATTR_OBJECT_INDEX		1 /* The object index (Mandatory in Create) */
+++#define SK_ATTR_OBJECT_LABEL		2 /* The object label (Mandatory in Create) */
+++#define SK_ATTR_OBJECT_VALUE		3 /*  Value of Object */
+++#define SK_ATTR_KEY_TYPE		5 /* Key Type RSA/EC (Mandatory with key type objects) */
+++
+++/* Attributes For RSA Key Pair */
+++#define SK_ATTR_MODULUS_BITS		30 /* Length in bits of modulus n */
+++#define SK_ATTR_MODULUS			31 /* Big integer Modulus n */
+++#define SK_ATTR_PUBLIC_EXPONENT		32 /* Big integer Public exponent e */
+++
+++#define SK_ATTR_PRIVATE_EXPONENT	33 /* Big integer Private exponent e */
+++#define SK_ATTR_PRIME_1			34 /* Big Integer Prime p */
+++#define SK_ATTR_PRIME_2			35 /* Big Integer Prime q */
+++#define SK_ATTR_EXPONENT_1		36 /* Big integer Private exponent d modulo p-1 */
+++#define SK_ATTR_EXPONENT_2		37 /* Big integer Private exponent d modulo q-1 */
+++#define SK_ATTR_COEFFICIENT		38 /* Big integer CRT coefficient q-1 mod p */
+++
+++/* Attributes For ECC Key Pair */
+++#define SK_ATTR_PARAMS			50 /* DER encoding of namedcurve */
+++#define SK_ATTR_POINT			51 /* Public point in octet uncompressed format */
+++#define SK_ATTR_PRIV_VALUE		52 /* Private Value */
+++
+++/*
+++ * Stores all the information required for an object's attribute - its type, value and value length.
+++ */
+++typedef struct SK_ATTRIBUTE{
+++	SK_ATTRIBUTE_TYPE	type;		/* The attribute's type */
+++	void			*value;		/* The attribute's value */
+++	uint16_t		valueLen;	/* The length in bytes of \p value. */
+++} SK_ATTRIBUTE;
+++
+++#endif
++\ No newline at end of file
++diff --git a/lib/libutee/include/pta_generate.h b/lib/libutee/include/pta_generate.h
++new file mode 100755
++index 0000000..5f7be60
++--- /dev/null
+++++ b/lib/libutee/include/pta_generate.h
++@@ -0,0 +1,25 @@
+++/* SPDX-License-Identifier: BSD-2-Clause */
+++/**
+++ * @copyright 2019 NXP
+++ *
+++ * @file    pta_generate.h
+++ *
+++ * @brief   PTA Generate interface identification.
+++ */
+++#ifndef __PTA_GENERATE_H__
+++#define __PTA_GENERATE_H__
+++
+++/**
+++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
+++ */
+++#define PTA_GENERATE_PTA_UUID { \
+++	0x9ac1086c, 0xc8d0, 0x11e9, \
+++	{0x2a, 0x2a, 0xe2, 0xdb, 0xcc, 0xe4, 0x26, 0xd6} }
+++
+++/**
+++ * @brief   PTA Command IDs
+++ */
+++#define PTA_GENERATE_RSAKEY_CMD 1
+++#define PTA_GENERATE_ECKEY_CMD 2
+++
+++#endif
++\ No newline at end of file
++diff --git a/lib/libutee/include/pta_hash.h b/lib/libutee/include/pta_hash.h
++new file mode 100755
++index 0000000..d458214
++--- /dev/null
+++++ b/lib/libutee/include/pta_hash.h
++@@ -0,0 +1,25 @@
+++/* SPDX-License-Identifier: BSD-2-Clause */
+++/**
+++ * @copyright 2019 NXP
+++ *
+++ * @file    pta_hash.h
+++ *
+++ * @brief   PTA Hash interface identification.
+++ */
+++#ifndef __PTA_HASH_H__
+++#define __PTA_HASH_H__
+++
+++/**
+++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
+++ */
+++#define PTA_HASH_PTA_UUID { \
+++	0xc45a4022, 0xc8c0, 0x11e9, \
+++	{0xa3, 0x2f, 0x2a, 0x2a, 0xe2, 0xdb, 0xcc, 0xe4} }
+++
+++/**
+++ * @brief   PTA Command IDs
+++ */
+++#define PTA_HASH_CMD_DIGEST 1
+++
+++
+++#endif
++diff --git a/lib/libutee/include/pta_help.h b/lib/libutee/include/pta_help.h
++new file mode 100755
++index 0000000..37ff4d5
++--- /dev/null
+++++ b/lib/libutee/include/pta_help.h
++@@ -0,0 +1,24 @@
+++/* SPDX-License-Identifier: BSD-2-Clause */
+++/**
+++ * @copyright 2019 NXP
+++ *
+++ * @file    pta_help.h
+++ *
+++ * @brief  
+++ */
+++
+++#ifndef __PTA_HELP_H__
+++#define __PTA_HELP_H__
+++
+++/**
+++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
+++ * f4010dbc-a0ed-4f9a-b9c7-dabb503e3838
+++ */
+++#define PTA_HELP_PTA_UUID { \
+++	0xf4010dbc, 0xa0ed, 0x4f9a, \
+++	{0xb9, 0xc7, 0xda, 0xbb, 0x50, 0x3e, 0x38, 0x38} }
+++
+++SK_ATTRIBUTE *TA_GetSKAttr(SK_ATTRIBUTE_TYPE type, SK_ATTRIBUTE *attrs,
+++			   uint32_t attr_count);
+++
+++#endif
++diff --git a/lib/libutee/include/pta_sign.h b/lib/libutee/include/pta_sign.h
++new file mode 100755
++index 0000000..1c27845
++--- /dev/null
+++++ b/lib/libutee/include/pta_sign.h
++@@ -0,0 +1,92 @@
+++/* SPDX-License-Identifier: BSD-2-Clause */
+++/**
+++ * @copyright 2019 NXP
+++ *
+++ * @file    pta_sign.h
+++ *
+++ * @brief    PTA Hash interface identification.
+++ */
+++
+++#ifndef __PTA_SIGN_H__
+++#define __PTA_SIGN_H__
+++
+++
+++/**
+++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
+++ * 24e44203-e69e-4505-9d4a-1f50043d19ec
+++ */
+++#define PTA_SIGN_UUID { \
+++	0x24e44203, 0xe69e, 0x4505, \
+++	{0x9d, 0x4a, 0x1f, 0x50, 0x04, 0x3d, 0x19, 0xec} }
+++
+++#define PTA_SIGN_RSA_DIGEST 1
+++#define PTA_SIGN_ECC_DIGEST 2
+++
+++typedef struct{
+++	uint8_t *modulus;
+++	uint8_t *pub_exp;
+++	uint8_t *priv_exp;
+++	uint32_t mod_size;
+++	uint32_t pub_size;
+++	uint32_t priv_size;
+++} SK_RSA_KEY;
+++
+++typedef struct {
+++	uint8_t *priv_val;
+++	uint8_t *pub_x;
+++	uint8_t *pub_y;
+++	uint32_t curve;
+++	uint32_t priv_size;
+++	uint32_t x_size;
+++	uint32_t y_size;
+++} SK_ECC_KEY;
+++
+++/*
+++ * A type for all the defines.
+++ */
+++typedef uint32_t SK_TYPE;
+++
+++/*
+++ * An Attribute Type.
+++ */
+++typedef SK_TYPE SK_ATTRIBUTE_TYPE;
+++
+++#define SK_ATTR_OBJECT_TYPE		0 /* The object type (Mandatory in Create) */
+++#define SK_ATTR_OBJECT_INDEX		1 /* The object index (Mandatory in Create) */
+++#define SK_ATTR_OBJECT_LABEL		2 /* The object label (Mandatory in Create) */
+++#define SK_ATTR_OBJECT_VALUE		3 /*  Value of Object */
+++#define SK_ATTR_KEY_TYPE		5 /* Key Type RSA/EC (Mandatory with key type objects) */
+++
+++/* Attributes For RSA Key Pair */
+++#define SK_ATTR_MODULUS_BITS		30 /* Length in bits of modulus n */
+++#define SK_ATTR_MODULUS			31 /* Big integer Modulus n */
+++#define SK_ATTR_PUBLIC_EXPONENT		32 /* Big integer Public exponent e */
+++
+++#define SK_ATTR_PRIVATE_EXPONENT	33 /* Big integer Private exponent e */
+++#define SK_ATTR_PRIME_1			34 /* Big Integer Prime p */
+++#define SK_ATTR_PRIME_2			35 /* Big Integer Prime q */
+++#define SK_ATTR_EXPONENT_1		36 /* Big integer Private exponent d modulo p-1 */
+++#define SK_ATTR_EXPONENT_2		37 /* Big integer Private exponent d modulo q-1 */
+++#define SK_ATTR_COEFFICIENT		38 /* Big integer CRT coefficient q-1 mod p */
+++
+++/* Attributes For ECC Key Pair */
+++#define SK_ATTR_PARAMS			50 /* DER encoding of namedcurve */
+++#define SK_ATTR_POINT			51 /* Public point in octet uncompressed format */
+++#define SK_ATTR_PRIV_VALUE		52 /* Private Value */
+++
+++/*
+++ * Stores all the information required for an object's attribute - its type, value and value length.
+++ */
+++typedef struct SK_ATTRIBUTE{
+++	SK_ATTRIBUTE_TYPE	type;		/* The attribute's type */
+++	void			*value;		/* The attribute's value */
+++	uint16_t		valueLen;	/* The length in bytes of \p value. */
+++} SK_ATTRIBUTE;
+++
+++#define SUPPORTED_EC_CURVES	2
+++/* EC Curve in DER encoding */
+++
+++
+++#endif
+++
+++
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index e8b5aba..b6f8bc1 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -39,6 +39,9 @@ $(call force, CFG_CRYPTO_BLOB_HW,y)
+ 
+ ifeq ($(filter y, $(CFG_MX6UL)$(CFG_MX7)$(CFG_MX8MM)$(CFG_MX8M)),y)
+ # Definition of the Asymmetric Cipher supported by HW
++$(call force, CFG_SIGN_PTA, y)
++$(call force, CFG_GENERATE_PTA, y)
++$(call force, CFG_DECRYPT_PTA, y)
+ $(call force, CFG_CRYPTO_RSA_HW,y)
+ $(call force, CFG_CRYPTO_DSA_HW,n)
+ $(call force, CFG_CRYPTO_DH_HW,n)
+@@ -63,6 +66,7 @@ endif
+ 
+ # Definition of the HASH Algorithm supported by all i.MX
+ ifeq ($(CFG_CRYPTO_HASH_HW), y)
++CFG_HASH_PTA ?= y
+ CFG_CRYPTO_HASH_HW_MD5    ?= y
+ CFG_CRYPTO_HASH_HW_SHA1   ?= y
+ CFG_CRYPTO_HASH_HW_SHA224 ?= y
+diff --git a/core/arch/arm/plat-imx/pta/pta_decrypt_mx.c b/core/arch/arm/plat-imx/pta/pta_decrypt_mx.c
+new file mode 100755
+index 0000000..47b3c5c
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_decrypt_mx.c
+@@ -0,0 +1,264 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++* @copyright 2019 NXP
++*
++* @file    pta_decrypt_mx.c
++*
++* @brief   Pseudo Trusted Application.
++*			RSA Decrypt functionality
++*/
++
++#include <kernel/pseudo_ta.h>
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_decrypt.h>
++#include <pta_help.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <crypto_extension.h>
++#include <libimxcrypt_acipher.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/**
++ * @brief   Call the Cryptographic Extension API to decrypt
++ *          data using RSA key and rsa_nopad algorithm
++ *
++ *  Params are:
++ *    Input:
++ *     params[0].value.a = NoNe
++ *     params[1].memref  = Encrypted message
++ *     params[2].memref  = Reference to RSA key
++ *    Output:
++ *     params[3].memref  = Decrypted message
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ *
++ */
++
++static TEE_Result decrypt_rsa_nopad(uint32_t param_types,
++        TEE_Param params[4])
++{
++    TEE_Result res = TEE_SUCCESS;
++    SK_RSA_KEY *rsa_key;
++    size_t msg_len, decr_msg_len;
++    struct rsa_keypair key;
++	uint8_t *msg, *decr_msg;
++    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INOUT);
++
++	if (param_types != exp_param_types) {
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++    /*Call the iMX Crypto API for RSA Decrypt*/
++    msg = params[1].memref.buffer;
++    msg_len = params[1].memref.size;
++    decr_msg = params[3].memref.buffer;
++
++    rsa_key = malloc(sizeof(SK_RSA_KEY));
++    if (rsa_key == NULL) {
++        return TEE_ERROR_OUT_OF_MEMORY;
++    }
++    memcpy(rsa_key, params[2].memref.buffer, params[2].memref.size);
++
++    key.e = crypto_bignum_allocate(rsa_key->pub_size * 8);
++    key.d = crypto_bignum_allocate(rsa_key->priv_size * 8);
++    key.n = crypto_bignum_allocate(rsa_key->mod_size * 8);
++
++    res = crypto_bignum_bin2bn(rsa_key->pub_exp, rsa_key->pub_size,
++                key.e);
++    if (res != TEE_SUCCESS)
++		  goto out;
++    res = crypto_bignum_bin2bn(rsa_key->priv_exp, rsa_key->priv_size,
++                key.d);
++    if (res != TEE_SUCCESS)
++		  goto out;
++    res = crypto_bignum_bin2bn(rsa_key->modulus, rsa_key->mod_size,
++                key.n);
++    if (res != TEE_SUCCESS)
++	  	goto out;
++    res = crypto_acipher_rsanopad_decrypt(&key, msg, msg_len, decr_msg,
++                &decr_msg_len);
++    DMSG("Print rsa decr %x:\n", res);
++    if (res != TEE_SUCCESS)
++		  goto out;
++
++    params[3].memref.buffer = decr_msg;
++    params[3].memref.size = decr_msg_len;
++out:
++    crypto_bignum_free(key.e);
++    crypto_bignum_free(key.d);
++    crypto_bignum_free(key.n);
++    return res;
++}
++
++/**
++ * @brief   Call the Cryptographic Extension API to decrypt
++ *          data using RSA key and rsaes_pkcs algorithm
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0]         = NoNe
++ *     params[1].memref  = Message to Decrypt
++ *     params[2].memref  = Refference to ECC key
++ *     params[3].memref  = Decrypted message
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++
++static TEE_Result decrypt_rsaes(uint32_t param_types,
++        TEE_Param params[4])
++{
++    /* Not supported yet */
++      TEE_Result res = TEE_SUCCESS;
++    SK_RSA_KEY *rsa_key;
++    size_t msg_len, decr_msg_len;
++    struct rsa_keypair key;
++	uint8_t *msg, *decr_msg;
++    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INOUT);
++
++	if (param_types != exp_param_types) {
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++    /*Call the iMX Crypto API for RSA Decryption*/
++    msg = params[1].memref.buffer;
++    msg_len = params[1].memref.size;
++    decr_msg = params[3].memref.buffer;
++
++    rsa_key = malloc(sizeof(SK_RSA_KEY));
++    memcpy(rsa_key, params[2].memref.buffer, params[2].memref.size);
++
++    key.e = crypto_bignum_allocate(rsa_key->pub_size * 8);
++    key.d = crypto_bignum_allocate(rsa_key->priv_size * 8);
++    key.n = crypto_bignum_allocate(rsa_key->mod_size * 8);
++
++    res = crypto_bignum_bin2bn(rsa_key->pub_exp, rsa_key->pub_size,
++                key.e);
++    if (res != TEE_SUCCESS)
++		  goto out;
++    res = crypto_bignum_bin2bn(rsa_key->priv_exp, rsa_key->priv_size,
++                key.d);
++    if (res != TEE_SUCCESS)
++		  goto out;
++    res = crypto_bignum_bin2bn(rsa_key->modulus, rsa_key->mod_size,
++                key.n);
++    if (res != TEE_SUCCESS)
++	  	goto out;
++    res = crypto_acipher_rsanopad_decrypt(&key, msg, msg_len, decr_msg,
++                &decr_msg_len);
++    DMSG("Print rsa decr %x:\n", res);
++    if (res != TEE_SUCCESS)
++		  goto out;
++
++    params[3].memref.buffer = decr_msg;
++    params[3].memref.size = decr_msg_len;
++
++out:
++    crypto_bignum_free(key.e);
++    crypto_bignum_free(key.d);
++    crypto_bignum_free(key.n);
++    return res;
++}
++
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++        TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++        void **sess_ctx)
++{
++    struct tee_ta_session *sess;
++
++    /* Check if the session is opened by a TA */
++    sess = tee_ta_get_calling_session();
++    if (!sess)
++        return TEE_ERROR_ACCESS_DENIED;
++
++    *sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++    return TEE_SUCCESS;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++        uint32_t cmd_id, uint32_t param_types,
++        TEE_Param params[TEE_NUM_PARAMS])
++{
++    switch (cmd_id) {
++    case PTA_DECRYPT_RSA_NOPAD:
++        return decrypt_rsa_nopad(param_types, params);
++    case PTA_DECRYPT_RSAES:
++        return decrypt_rsaes(param_types, params);
++    default:
++        return TEE_ERROR_BAD_PARAMETERS;
++    }
++}
++
++pseudo_ta_register(
++        .uuid = PTA_DECRYPT_UUID,
++        .name = DECRYPT_PTA_NAME,
++        .flags = PTA_DEFAULT_FLAGS,
++        .open_session_entry_point = open_session,
++        .invoke_command_entry_point = invokeCommandEntryPoint);
+diff --git a/core/arch/arm/plat-imx/pta/pta_generate.c b/core/arch/arm/plat-imx/pta/pta_generate.c
+new file mode 100755
+index 0000000..480ef0e
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_generate.c
+@@ -0,0 +1,258 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++* @copyright 2019 NXP
++*
++* @file    pta_generate_mx.c
++*
++* @brief   Pseudo Trusted Application.
++*			RSA/ECC Key generation functionality
++*/
++
++#include <kernel/pseudo_ta.h>
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++#include <trace.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_sign.h>
++#include <pta_generate.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <crypto_extension.h>
++#include <libimxcrypt_acipher.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/* PTA Name */
++#define GENERATE_PTA_NAME "generate.pta"
++
++
++/**
++ * @brief  Generates an EC key using libimxcrypt
++ *
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * In/Out params:
++ * param#0 : value a : size of the key in bits
++ * param#0 : value b : size of the priv value Y in bytes
++ * param#1 : memref to ecc pub point
++ * param#2 : memref to ecc private value
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result generate_ec_key(uint32_t param_types,
++	TEE_Param params[TEE_NUM_PARAMS]) {
++	TEE_Result res = TEE_SUCCESS;
++	struct ecc_keypair key;
++	struct ecc_public_key ecc_pub_key;
++	uint32_t exp_param_types;
++	size_t key_size, pub_valx_size;
++	uint8_t *ec_pub_point;
++	DMSG("PTA Generate EC function %x", res);
++
++	exp_param_types = TEE_PARAM_TYPES(
++		TEE_PARAM_TYPE_VALUE_INOUT,
++		TEE_PARAM_TYPE_MEMREF_INOUT,
++		TEE_PARAM_TYPE_MEMREF_OUTPUT,
++		TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	key_size = params[0].value.a;
++	ec_pub_point = params[1].memref.buffer;
++
++	res = crypto_acipher_alloc_ecc_public_key(&ecc_pub_key, key_size);
++	if (res != TEE_SUCCESS)
++		return res;
++
++	if (key_size == 256) {
++		ecc_pub_key.curve = TEE_ECC_CURVE_NIST_P256;
++	} else if (key_size == 384) {
++		ecc_pub_key.curve = TEE_ECC_CURVE_NIST_P384;
++	}
++
++	DMSG("Alloc EC %x with size %x", res, key_size);
++	res = crypto_acipher_alloc_ecc_keypair(&key, key_size);
++	if (res != TEE_SUCCESS)
++		return res;
++
++	key.curve = ecc_pub_key.curve;
++	key.x = ecc_pub_key.x;
++	key.y = ecc_pub_key.y;
++	DMSG("Generate EC %d with size %x", ecc_pub_key.curve, key_size);
++
++	res = crypto_acipher_gen_ecc_key(&key);
++	if (res != TEE_SUCCESS)
++		return TEE_ERROR_ACCESS_CONFLICT;
++
++	DMSG("Generated EC %x with size %x", res, key_size);
++	// copy ec pub point from key to TA buffer
++
++	pub_valx_size = crypto_bignum_num_bytes(key.x);
++	crypto_bignum_bn2bin(key.x, ec_pub_point + 1);
++	crypto_bignum_bn2bin(key.y, ec_pub_point + pub_valx_size + 1);
++	crypto_bignum_bn2bin(key.d, params[2].memref.buffer);
++
++	params[1].memref.size = pub_valx_size;
++	params[0].value.b = crypto_bignum_num_bytes(key.y);
++	params[2].memref.size = crypto_bignum_num_bytes(key.d);
++
++
++	crypto_acipher_free_ecc_public_key(&ecc_pub_key);
++	crypto_bignum_free(key.d);
++
++	return res;
++}
++
++/**
++ * @brief  Generates a RSA key pair using libimxcrypt
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * Input params:
++ * param#0 : value a : size of the key in bits
++ * In/Out params:
++ * param#1 : memref to modulus
++ * param#2 : memref to public exponent
++ * param#3: memref to RSA private exponent
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++
++static TEE_Result generate_rsa_key(uint32_t param_types,
++	TEE_Param params[TEE_NUM_PARAMS]) {
++	TEE_Result res = TEE_SUCCESS;
++	struct rsa_keypair key;
++	struct rsa_public_key rsa_key_pub;
++	uint32_t key_size, pub_key_size;
++	uint32_t exp_param_types;
++	uint8_t *pub_key;
++
++	exp_param_types = TEE_PARAM_TYPES(
++		TEE_PARAM_TYPE_VALUE_INPUT,
++		TEE_PARAM_TYPE_MEMREF_INOUT,
++		TEE_PARAM_TYPE_MEMREF_INOUT,
++		TEE_PARAM_TYPE_MEMREF_INOUT);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	key_size = params[0].value.a;
++	pub_key_size = params[2].memref.size * 8;
++	pub_key = params[2].memref.buffer;
++	/* CRYPTO API */
++	res = crypto_acipher_alloc_rsa_keypair(&key, key_size);
++	if (res != TEE_SUCCESS)
++		return res;
++
++	res = crypto_acipher_alloc_rsa_public_key(&rsa_key_pub, pub_key_size);
++	DMSG("RES: %x", res);
++	if (res != TEE_SUCCESS)
++		return res;
++
++	res = crypto_bignum_bin2bn(pub_key, pub_key_size / 8, rsa_key_pub.e);
++	DMSG("RES: %x", res);
++	if (res != TEE_SUCCESS)
++		return res;
++
++	key.e = rsa_key_pub.e;
++	res = crypto_acipher_gen_rsa_key(&key, key_size);
++	DMSG("RES: %x", res);
++	if (res != TEE_SUCCESS)
++		return res;
++
++	/*modulus */
++	crypto_bignum_bn2bin(key.n, params[1].memref.buffer);
++	params[1].memref.size = crypto_bignum_num_bytes(key.n);
++	/*private exponent */
++	crypto_bignum_bn2bin(key.d, params[3].memref.buffer);
++	params[3].memref.size = crypto_bignum_num_bytes(key.d);
++
++	//free key
++	crypto_acipher_free_rsa_public_key(&rsa_key_pub);
++	crypto_bignum_free(key.n);
++	crypto_bignum_free(key.d);
++
++	return res;
++}
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++		TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++		void **sess_ctx)
++{
++	struct tee_ta_session *sess;
++
++	/* Check if the session is opened by a TA */
++	sess = tee_ta_get_calling_session();
++	if (!sess)
++		return TEE_ERROR_ACCESS_DENIED;
++
++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++	return TEE_SUCCESS;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++        uint32_t cmd_id, uint32_t param_types,
++        TEE_Param params[TEE_NUM_PARAMS])
++{
++    switch (cmd_id) {
++    case PTA_GENERATE_RSAKEY_CMD:
++		DMSG("RES: %d", cmd_id);
++        return generate_rsa_key(param_types, params);
++	case PTA_GENERATE_ECKEY_CMD:
++		DMSG("RES: %d", cmd_id);
++        return generate_ec_key(param_types, params);
++    default:
++        return TEE_ERROR_BAD_PARAMETERS;
++    }
++}
++
++
++pseudo_ta_register(
++		.uuid = PTA_GENERATE_PTA_UUID,
++		.name = GENERATE_PTA_NAME,
++		.flags = PTA_DEFAULT_FLAGS,
++		.open_session_entry_point = open_session,
++		.invoke_command_entry_point = invokeCommandEntryPoint);
+diff --git a/core/arch/arm/plat-imx/pta/pta_hash_mx.c b/core/arch/arm/plat-imx/pta/pta_hash_mx.c
+new file mode 100755
+index 0000000..6c93999
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_hash_mx.c
+@@ -0,0 +1,165 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++* @copyright 2019 NXP
++*
++* @file    pta_hash_mx.c
++*
++* @brief   Pseudo Trusted Application.
++*			Uses SKM_SHA to generate hash of a message
++*/
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_hash.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <crypto_extension.h>
++#include <libimxcrypt_hash.h>
++#include <libimxcrypt.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/* PTA Name */
++#define HASH_PTA_NAME "hash.pta"
++
++/**
++ * @brief   Call the Cryptographic Extension API to digest
++ *          data
++ *
++ *  Params are:
++ *    Input:
++ *     params[0].value.a = Cryptographic Algorithm
++ * 	   params[0].value.b = Digest Size
++ *     params[1].memref  = Message to do Hash
++ *	  Output:
++ *     params[2].memref  = Output Hash
++ * 	   params[3].memref = NONE
++ * 	   params[4].memref = NONE
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++
++static TEE_Result digest(uint32_t param_types,
++        TEE_Param params[4]) {
++		TEE_Result res = TEE_SUCCESS;
++		uint32_t algorithm;
++		uint8_t *message, *digest;
++		size_t msg_len, digest_size;
++
++		void *ctx = NULL;
++		uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++			TEE_PARAM_TYPE_MEMREF_INPUT,
++			TEE_PARAM_TYPE_MEMREF_INOUT,
++			TEE_PARAM_TYPE_NONE);
++		if (param_types != exp_param_types) {
++			res = TEE_ERROR_BAD_PARAMETERS;
++			goto out;
++		}
++		/*unpack parameters*/
++		algorithm = params[0].value.a;
++		digest_size = params[0].value.b;
++		message = params[1].memref.buffer;
++		msg_len = params[1].memref.size;
++		digest = params[2].memref.buffer;
++		/* call libimxcrypt hash functions */
++		res = crypto_hash_alloc_ctx(&ctx, algorithm);
++		if (res != TEE_SUCCESS)
++			goto out;
++		res = crypto_hash_init(ctx, algorithm);
++		if (res != TEE_SUCCESS)
++			goto out;
++		res = crypto_hash_update(ctx, algorithm,
++				message, msg_len);
++		if (res != TEE_SUCCESS)
++			goto out;
++		res = crypto_hash_final(ctx, algorithm, digest,
++			digest_size);
++		if (res != TEE_SUCCESS)
++			goto out;
++out:
++	crypto_hash_free_ctx(ctx, algorithm);
++	return res;
++}
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++		TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++		void **sess_ctx)
++{
++	struct tee_ta_session *sess;
++
++	/* Check if the session is opened by a TA */
++	sess = tee_ta_get_calling_session();
++	if (!sess)
++		return TEE_ERROR_ACCESS_DENIED;
++
++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++	return TEE_SUCCESS;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++		uint32_t cmd_id, uint32_t param_types,
++		TEE_Param params[TEE_NUM_PARAMS])
++{
++	switch (cmd_id) {
++	case PTA_HASH_CMD_DIGEST:
++		return digest(param_types, params);
++	default:
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++}
++
++
++pseudo_ta_register(
++		.uuid = PTA_HASH_PTA_UUID,
++		.name = HASH_PTA_NAME,
++		.flags = PTA_DEFAULT_FLAGS,
++		.open_session_entry_point = open_session,
++		.invoke_command_entry_point = invokeCommandEntryPoint);
+diff --git a/core/arch/arm/plat-imx/pta/pta_help_mx.c b/core/arch/arm/plat-imx/pta/pta_help_mx.c
+new file mode 100755
+index 0000000..d75f6fe
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_help_mx.c
+@@ -0,0 +1,51 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++* @copyright 2019 NXP
++*
++* @file    pta_help_mx.c
++*
++* @brief   Pseudo Trusted Application.
++*/
++
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_help.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <crypto_extension.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++SK_ATTRIBUTE *TA_GetSKAttr(SK_ATTRIBUTE_TYPE type, SK_ATTRIBUTE *attrs,
++			   uint32_t attr_count)
++{
++	size_t i;
++	SK_ATTRIBUTE *match_attr = NULL;
++
++	for (i = 0; i < attr_count; i++) {
++		if (type == attrs[i].type) {
++			match_attr = &attrs[i];
++			break;
++		}
++	}
++
++	if (match_attr)
++		DMSG("Match Attribute - value: %p, valueLen: %08x!\n",
++			match_attr->value, match_attr->valueLen);
++
++	return match_attr;
++}
+diff --git a/core/arch/arm/plat-imx/pta/pta_sign_mx.c b/core/arch/arm/plat-imx/pta/pta_sign_mx.c
+new file mode 100755
+index 0000000..85dd352
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_sign_mx.c
+@@ -0,0 +1,275 @@
++/**
++* SPDX-License-Identifier: BSD-2-Clause
++* @copyright 2019 NXP
++*
++* @file    pta_sign_mx.c
++*
++* @brief   Pseudo Trusted Application.
++*			RSA/ECC sign functionality
++*/
++
++#include <kernel/pseudo_ta.h>
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_sign.h>
++#include <pta_help.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <crypto_extension.h>
++#include <libimxcrypt_acipher.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/* PTA Name */
++#define SIGN_PTA_NAME "sign.pta"
++
++/**
++ * @brief   Call the Cryptographic Extension API to sign
++ *          data using RSA key
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a
++ *     params[0].value.b = Cryptographic Algorithm
++ *     params[1].memref  = Message to Sign
++ *     params[2].memref  = Reference to RSA key
++ *     params[3].memref  = Signature
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ *
++ */
++
++static TEE_Result sign_rsa(uint32_t param_types,
++        TEE_Param params[4])
++{
++    TEE_Result res = TEE_SUCCESS;
++    SK_RSA_KEY *rsa_key;
++    uint32_t algo, salt_len = 20;
++    size_t sig_len, msg_len;
++    struct rsa_keypair key;
++	  uint8_t *msg, *sig;
++    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INOUT);
++
++	if (param_types != exp_param_types) {
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++    /*Call the iMX Crypto API for RSA Sign*/
++    algo = params[0].value.b;
++    msg = params[1].memref.buffer;
++    msg_len = params[1].memref.size;
++    sig = params[3].memref.buffer;
++
++    rsa_key = malloc(sizeof(SK_RSA_KEY));
++    if (rsa_key == NULL) {
++        return TEE_ERROR_OUT_OF_MEMORY;
++    }
++    memcpy(rsa_key, params[2].memref.buffer, params[2].memref.size);
++
++    key.e = crypto_bignum_allocate(rsa_key->pub_size * 8);
++    key.d = crypto_bignum_allocate(rsa_key->priv_size * 8);
++    key.n = crypto_bignum_allocate(rsa_key->mod_size * 8);
++
++    res = crypto_bignum_bin2bn(rsa_key->pub_exp, rsa_key->pub_size,
++                key.e);
++    if (res != TEE_SUCCESS)
++		  goto out;
++    res = crypto_bignum_bin2bn(rsa_key->priv_exp, rsa_key->priv_size,
++                key.d);
++    if (res != TEE_SUCCESS)
++		  goto out;
++    res = crypto_bignum_bin2bn(rsa_key->modulus, rsa_key->mod_size,
++                key.n);
++    if (res != TEE_SUCCESS)
++	  	goto out;
++
++    res = crypto_acipher_rsassa_sign(algo, &key, salt_len, msg,
++                msg_len, sig, &sig_len);
++    DMSG("Print rsa sign %x:\n", res);
++    if (res != TEE_SUCCESS)
++		  goto out;
++
++    params[3].memref.buffer = sig;
++
++out:
++    free(rsa_key);
++    crypto_bignum_free(key.e);
++    crypto_bignum_free(key.d);
++    crypto_bignum_free(key.n);
++    return res;
++}
++
++
++/**
++ * @brief   Call the Cryptographic Extension API to sign
++ *          data using ECC key
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a =
++ *     params[0].value.b = Cryptographic Algorithm
++ *     params[1].memref  = Message to Sign
++ *     params[2].memref  = Refference to ECC key
++ *     params[3].memref  = Signature
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++
++static TEE_Result sign_ecc(uint32_t param_types,
++        TEE_Param params[4])
++{
++    TEE_Result res = TEE_SUCCESS;
++    uint32_t algo;
++    uint8_t *sig, *msg;
++    size_t sig_len, msg_len;
++    struct ecc_keypair key;
++    SK_ECC_KEY *ecc_key;
++    uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_OUTPUT);
++	if (param_types != exp_param_types) {
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++    /*Call the iMX Crypto API for EC Sign*/
++    algo = params[0].value.b;
++    msg = params[1].memref.buffer;
++    msg_len = params[1].memref.size;
++    sig = params[3].memref.buffer;
++    ecc_key = malloc(sizeof(SK_ECC_KEY));
++    if (ecc_key == NULL) {
++        return TEE_ERROR_OUT_OF_MEMORY;
++    }
++    memcpy(ecc_key, params[2].memref.buffer, params[2].memref.size);
++
++    key.x = crypto_bignum_allocate(ecc_key->x_size * 8);
++    key.y = crypto_bignum_allocate(ecc_key->y_size * 8);
++    key.d = crypto_bignum_allocate(ecc_key->priv_size * 8);
++    key.curve = ecc_key->curve;
++    res = crypto_bignum_bin2bn(ecc_key->pub_x, ecc_key->x_size,
++                key.x);
++    if (res != TEE_SUCCESS)
++		goto out;
++    res = crypto_bignum_bin2bn(ecc_key->pub_y, ecc_key->y_size,
++                key.y);
++    if (res != TEE_SUCCESS)
++		goto out;
++    res = crypto_bignum_bin2bn(ecc_key->priv_val, ecc_key->priv_size,
++                key.d);
++    if (res != TEE_SUCCESS)
++		goto out;
++
++    res = crypto_acipher_ecc_sign(algo, &key, msg, msg_len, sig, &sig_len);
++    if (res != TEE_SUCCESS)
++        goto out;
++
++    params[3].memref.buffer = sig;
++    params[3].memref.size = sig_len;
++out:
++    free(ecc_key);
++    crypto_bignum_free(key.x);
++    crypto_bignum_free(key.y);
++    crypto_bignum_free(key.d);
++    return res;
++}
++
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++        TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++        void **sess_ctx)
++{
++    struct tee_ta_session *sess;
++
++    /* Check if the session is opened by a TA */
++    sess = tee_ta_get_calling_session();
++    if (!sess)
++        return TEE_ERROR_ACCESS_DENIED;
++
++    *sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++    return TEE_SUCCESS;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++        uint32_t cmd_id, uint32_t param_types,
++        TEE_Param params[TEE_NUM_PARAMS])
++{
++    switch (cmd_id) {
++    case PTA_SIGN_RSA_DIGEST:
++        DMSG("Ready to RSA sign: %x", cmd_id);
++        return sign_rsa(param_types, params);
++    case PTA_SIGN_ECC_DIGEST:
++        return sign_ecc(param_types, params);
++    default:
++        return TEE_ERROR_BAD_PARAMETERS;
++    }
++}
++
++pseudo_ta_register(
++        .uuid = PTA_SIGN_UUID,
++        .name = SIGN_PTA_NAME,
++        .flags = PTA_DEFAULT_FLAGS,
++        .open_session_entry_point = open_session,
++        .invoke_command_entry_point = invokeCommandEntryPoint);
+diff --git a/core/arch/arm/plat-imx/pta/sub.mk b/core/arch/arm/plat-imx/pta/sub.mk
+new file mode 100644
+index 0000000..c8f6893
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/sub.mk
+@@ -0,0 +1,4 @@
++srcs-$(CFG_SIGN_PTA) += pta_sign_mx.c
++srcs-$(CFG_HASH_PTA) += pta_hash_mx.c
++srcs-$(CFG_GENERATE_PTA) += pta_generate.c
++srcs-$(CFG_DECRYPT_PTA) += pta_decrypt_mx.c
+diff --git a/lib/libutee/include/pta_decrypt.h b/lib/libutee/include/pta_decrypt.h
+new file mode 100755
+index 0000000..89fcb5c
+--- /dev/null
++++ b/lib/libutee/include/pta_decrypt.h
+@@ -0,0 +1,76 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_decrypt.h
++ *
++ * @brief   PTA Decrypt interface identification.
++ */
++#ifndef __PTA_DECRYPT_H__
++#define __PTA_DECRYPT_H__
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ */
++#define PTA_DECRYPT_UUID { \
++	0xcf92e9b6, 0xd550, 0x11e9, \
++	{0xbb, 0x65, 0x2a, 0x2a, 0xe2, 0xdb, 0xcc, 0xe4} }
++/**
++ * @brief   PTA Command IDs
++ */
++#define PTA_DECRYPT_RSA_NOPAD 1
++#define PTA_DECRYPT_RSAES 2
++#define DECRYPT_PTA_NAME "decrypt.pta"
++
++typedef struct{
++	uint8_t *modulus;
++	uint8_t *pub_exp;
++	uint8_t *priv_exp;
++	uint32_t mod_size;
++	uint32_t pub_size;
++	uint32_t priv_size;
++} SK_RSA_KEY;
++
++/*
++ * A type for all the defines.
++ */
++typedef uint32_t SK_TYPE;
++
++/*
++ * An Attribute Type.
++ */
++typedef SK_TYPE SK_ATTRIBUTE_TYPE;
++
++#define SK_ATTR_OBJECT_TYPE		0 /* The object type (Mandatory in Create) */
++#define SK_ATTR_OBJECT_INDEX		1 /* The object index (Mandatory in Create) */
++#define SK_ATTR_OBJECT_LABEL		2 /* The object label (Mandatory in Create) */
++#define SK_ATTR_OBJECT_VALUE		3 /*  Value of Object */
++#define SK_ATTR_KEY_TYPE		5 /* Key Type RSA/EC (Mandatory with key type objects) */
++
++/* Attributes For RSA Key Pair */
++#define SK_ATTR_MODULUS_BITS		30 /* Length in bits of modulus n */
++#define SK_ATTR_MODULUS			31 /* Big integer Modulus n */
++#define SK_ATTR_PUBLIC_EXPONENT		32 /* Big integer Public exponent e */
++
++#define SK_ATTR_PRIVATE_EXPONENT	33 /* Big integer Private exponent e */
++#define SK_ATTR_PRIME_1			34 /* Big Integer Prime p */
++#define SK_ATTR_PRIME_2			35 /* Big Integer Prime q */
++#define SK_ATTR_EXPONENT_1		36 /* Big integer Private exponent d modulo p-1 */
++#define SK_ATTR_EXPONENT_2		37 /* Big integer Private exponent d modulo q-1 */
++#define SK_ATTR_COEFFICIENT		38 /* Big integer CRT coefficient q-1 mod p */
++
++/* Attributes For ECC Key Pair */
++#define SK_ATTR_PARAMS			50 /* DER encoding of namedcurve */
++#define SK_ATTR_POINT			51 /* Public point in octet uncompressed format */
++#define SK_ATTR_PRIV_VALUE		52 /* Private Value */
++
++/*
++ * Stores all the information required for an object's attribute - its type, value and value length.
++ */
++typedef struct SK_ATTRIBUTE{
++	SK_ATTRIBUTE_TYPE	type;		/* The attribute's type */
++	void			*value;		/* The attribute's value */
++	uint16_t		valueLen;	/* The length in bytes of \p value. */
++} SK_ATTRIBUTE;
++
++#endif
+\ No newline at end of file
+diff --git a/lib/libutee/include/pta_generate.h b/lib/libutee/include/pta_generate.h
+new file mode 100755
+index 0000000..5f7be60
+--- /dev/null
++++ b/lib/libutee/include/pta_generate.h
+@@ -0,0 +1,25 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_generate.h
++ *
++ * @brief   PTA Generate interface identification.
++ */
++#ifndef __PTA_GENERATE_H__
++#define __PTA_GENERATE_H__
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ */
++#define PTA_GENERATE_PTA_UUID { \
++	0x9ac1086c, 0xc8d0, 0x11e9, \
++	{0x2a, 0x2a, 0xe2, 0xdb, 0xcc, 0xe4, 0x26, 0xd6} }
++
++/**
++ * @brief   PTA Command IDs
++ */
++#define PTA_GENERATE_RSAKEY_CMD 1
++#define PTA_GENERATE_ECKEY_CMD 2
++
++#endif
+\ No newline at end of file
+diff --git a/lib/libutee/include/pta_hash.h b/lib/libutee/include/pta_hash.h
+new file mode 100755
+index 0000000..d458214
+--- /dev/null
++++ b/lib/libutee/include/pta_hash.h
+@@ -0,0 +1,25 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_hash.h
++ *
++ * @brief   PTA Hash interface identification.
++ */
++#ifndef __PTA_HASH_H__
++#define __PTA_HASH_H__
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ */
++#define PTA_HASH_PTA_UUID { \
++	0xc45a4022, 0xc8c0, 0x11e9, \
++	{0xa3, 0x2f, 0x2a, 0x2a, 0xe2, 0xdb, 0xcc, 0xe4} }
++
++/**
++ * @brief   PTA Command IDs
++ */
++#define PTA_HASH_CMD_DIGEST 1
++
++
++#endif
+diff --git a/lib/libutee/include/pta_help.h b/lib/libutee/include/pta_help.h
+new file mode 100755
+index 0000000..37ff4d5
+--- /dev/null
++++ b/lib/libutee/include/pta_help.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_help.h
++ *
++ * @brief  
++ */
++
++#ifndef __PTA_HELP_H__
++#define __PTA_HELP_H__
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ * f4010dbc-a0ed-4f9a-b9c7-dabb503e3838
++ */
++#define PTA_HELP_PTA_UUID { \
++	0xf4010dbc, 0xa0ed, 0x4f9a, \
++	{0xb9, 0xc7, 0xda, 0xbb, 0x50, 0x3e, 0x38, 0x38} }
++
++SK_ATTRIBUTE *TA_GetSKAttr(SK_ATTRIBUTE_TYPE type, SK_ATTRIBUTE *attrs,
++			   uint32_t attr_count);
++
++#endif
+diff --git a/lib/libutee/include/pta_sign.h b/lib/libutee/include/pta_sign.h
+new file mode 100755
+index 0000000..1c27845
+--- /dev/null
++++ b/lib/libutee/include/pta_sign.h
+@@ -0,0 +1,92 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_sign.h
++ *
++ * @brief    PTA Hash interface identification.
++ */
++
++#ifndef __PTA_SIGN_H__
++#define __PTA_SIGN_H__
++
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ * 24e44203-e69e-4505-9d4a-1f50043d19ec
++ */
++#define PTA_SIGN_UUID { \
++	0x24e44203, 0xe69e, 0x4505, \
++	{0x9d, 0x4a, 0x1f, 0x50, 0x04, 0x3d, 0x19, 0xec} }
++
++#define PTA_SIGN_RSA_DIGEST 1
++#define PTA_SIGN_ECC_DIGEST 2
++
++typedef struct{
++	uint8_t *modulus;
++	uint8_t *pub_exp;
++	uint8_t *priv_exp;
++	uint32_t mod_size;
++	uint32_t pub_size;
++	uint32_t priv_size;
++} SK_RSA_KEY;
++
++typedef struct {
++	uint8_t *priv_val;
++	uint8_t *pub_x;
++	uint8_t *pub_y;
++	uint32_t curve;
++	uint32_t priv_size;
++	uint32_t x_size;
++	uint32_t y_size;
++} SK_ECC_KEY;
++
++/*
++ * A type for all the defines.
++ */
++typedef uint32_t SK_TYPE;
++
++/*
++ * An Attribute Type.
++ */
++typedef SK_TYPE SK_ATTRIBUTE_TYPE;
++
++#define SK_ATTR_OBJECT_TYPE		0 /* The object type (Mandatory in Create) */
++#define SK_ATTR_OBJECT_INDEX		1 /* The object index (Mandatory in Create) */
++#define SK_ATTR_OBJECT_LABEL		2 /* The object label (Mandatory in Create) */
++#define SK_ATTR_OBJECT_VALUE		3 /*  Value of Object */
++#define SK_ATTR_KEY_TYPE		5 /* Key Type RSA/EC (Mandatory with key type objects) */
++
++/* Attributes For RSA Key Pair */
++#define SK_ATTR_MODULUS_BITS		30 /* Length in bits of modulus n */
++#define SK_ATTR_MODULUS			31 /* Big integer Modulus n */
++#define SK_ATTR_PUBLIC_EXPONENT		32 /* Big integer Public exponent e */
++
++#define SK_ATTR_PRIVATE_EXPONENT	33 /* Big integer Private exponent e */
++#define SK_ATTR_PRIME_1			34 /* Big Integer Prime p */
++#define SK_ATTR_PRIME_2			35 /* Big Integer Prime q */
++#define SK_ATTR_EXPONENT_1		36 /* Big integer Private exponent d modulo p-1 */
++#define SK_ATTR_EXPONENT_2		37 /* Big integer Private exponent d modulo q-1 */
++#define SK_ATTR_COEFFICIENT		38 /* Big integer CRT coefficient q-1 mod p */
++
++/* Attributes For ECC Key Pair */
++#define SK_ATTR_PARAMS			50 /* DER encoding of namedcurve */
++#define SK_ATTR_POINT			51 /* Public point in octet uncompressed format */
++#define SK_ATTR_PRIV_VALUE		52 /* Private Value */
++
++/*
++ * Stores all the information required for an object's attribute - its type, value and value length.
++ */
++typedef struct SK_ATTRIBUTE{
++	SK_ATTRIBUTE_TYPE	type;		/* The attribute's type */
++	void			*value;		/* The attribute's value */
++	uint16_t		valueLen;	/* The length in bytes of \p value. */
++} SK_ATTRIBUTE;
++
++#define SUPPORTED_EC_CURVES	2
++/* EC Curve in DER encoding */
++
++
++#endif
++
++
