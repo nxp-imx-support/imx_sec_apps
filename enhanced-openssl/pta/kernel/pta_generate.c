@@ -41,7 +41,7 @@
 
 /**
  * @brief  Generates an EC key using libimxcrypt
- *          
+ *
  *
  * @param[in]  param_types    TEE parameters
  * @param[in]  params         Buffer parameters
@@ -50,7 +50,7 @@
  * param#0 : value b : size of the priv value Y in bytes
  * param#1 : memref to ecc pub point
  * param#2 : memref to ecc private value
- * 
+ *
  * @retval TEE_SUCCESS                 Success
  * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
  */
@@ -69,7 +69,7 @@ static TEE_Result generate_ec_key(uint32_t param_types,
 		TEE_PARAM_TYPE_MEMREF_INOUT,
 		TEE_PARAM_TYPE_MEMREF_OUTPUT,
 		TEE_PARAM_TYPE_NONE);
-	
+
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
@@ -112,7 +112,7 @@ static TEE_Result generate_ec_key(uint32_t param_types,
 	params[0].value.b = crypto_bignum_num_bytes(key.y);
 	params[2].memref.size = crypto_bignum_num_bytes(key.d);
 
-	
+
 	crypto_acipher_free_ecc_public_key(&ecc_pub_key);
 	crypto_bignum_free(key.d);
 
@@ -121,7 +121,7 @@ static TEE_Result generate_ec_key(uint32_t param_types,
 
 /**
  * @brief  Generates a RSA key pair using libimxcrypt
- *          
+ *
  * @param[in]  param_types    TEE parameters
  * @param[in]  params         Buffer parameters
  * Input params:
@@ -164,7 +164,7 @@ static TEE_Result generate_rsa_key(uint32_t param_types,
 	DMSG("RES: %x", res);
 	if (res != TEE_SUCCESS)
 		return res;
-	
+
 	res = crypto_bignum_bin2bn(pub_key, pub_key_size / 8, rsa_key_pub.e);
 	DMSG("RES: %x", res);
 	if (res != TEE_SUCCESS)
@@ -182,7 +182,7 @@ static TEE_Result generate_rsa_key(uint32_t param_types,
 	/*private exponent */
 	crypto_bignum_bn2bin(key.d, params[3].memref.buffer);
 	params[3].memref.size = crypto_bignum_num_bytes(key.d);
-	
+
 	//free key
 	crypto_acipher_free_rsa_public_key(&rsa_key_pub);
 	crypto_bignum_free(key.n);

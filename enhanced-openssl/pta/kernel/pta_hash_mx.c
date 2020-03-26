@@ -89,11 +89,11 @@ static TEE_Result digest(uint32_t param_types,
 		res = crypto_hash_init(ctx, algorithm);
 		if (res != TEE_SUCCESS)
 			goto out;
-		res = crypto_hash_update(ctx, algorithm, 
+		res = crypto_hash_update(ctx, algorithm,
 				message, msg_len);
 		if (res != TEE_SUCCESS)
 			goto out;
-		res = crypto_hash_final(ctx, algorithm, digest, 
+		res = crypto_hash_final(ctx, algorithm, digest,
 			digest_size);
 		if (res != TEE_SUCCESS)
 			goto out;

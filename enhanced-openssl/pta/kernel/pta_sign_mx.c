@@ -43,7 +43,7 @@
  *
  *  Params are:
  *    Inputs:
- *     params[0].value.a = 
+ *     params[0].value.a
  *     params[0].value.b = Cryptographic Algorithm
  *     params[1].memref  = Message to Sign
  *     params[2].memref  = Reference to RSA key
@@ -58,7 +58,7 @@
  * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
  * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
  * @retval TEE_ERROR_GENERIC           Generic error
- * 
+ *
  */
 
 static TEE_Result sign_rsa(uint32_t param_types,
@@ -116,7 +116,7 @@ static TEE_Result sign_rsa(uint32_t param_types,
 		  goto out;
 
     params[3].memref.buffer = sig;
-    
+
 out:
     free(rsa_key);
     crypto_bignum_free(key.e);
@@ -132,7 +132,7 @@ out:
  *
  *  Params are:
  *    Inputs:
- *     params[0].value.a = 
+ *     params[0].value.a =
  *     params[0].value.b = Cryptographic Algorithm
  *     params[1].memref  = Message to Sign
  *     params[2].memref  = Refference to ECC key
@@ -196,9 +196,9 @@ static TEE_Result sign_ecc(uint32_t param_types,
 		goto out;
 
     res = crypto_acipher_ecc_sign(algo, &key, msg, msg_len, sig, &sig_len);
-    if (res != TEE_SUCCESS) 
+    if (res != TEE_SUCCESS)
         goto out;
-  
+
     params[3].memref.buffer = sig;
     params[3].memref.size = sig_len;
 out:

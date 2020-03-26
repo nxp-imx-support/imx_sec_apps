@@ -55,7 +55,7 @@
  * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
  * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
  * @retval TEE_ERROR_GENERIC           Generic error
- * 
+ *
  */
 
 static TEE_Result decrypt_rsa_nopad(uint32_t param_types,
@@ -191,7 +191,7 @@ static TEE_Result decrypt_rsaes(uint32_t param_types,
 
     params[3].memref.buffer = decr_msg;
     params[3].memref.size = decr_msg_len;
-    
+
 out:
     crypto_bignum_free(key.e);
     crypto_bignum_free(key.d);
