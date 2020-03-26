@@ -115,5 +115,6 @@ cp secureobj_openssl_engine/libeng_secure_obj.so /$ROOTFS/usr/lib
 
 cp secureobj_openssl_engine/app/sobj_eng_app $ROOTFS/homedir/root/
 
-** More details are available in the AN12632 [1].
+**More details are available in the AN12632 [1].**
+
 [1] https://www.nxp.com.cn/docs/en/application-note/AN12632.pdf
