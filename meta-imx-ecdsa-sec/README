@@ -1,11 +1,11 @@
-This README file contains information on the contents of the meta-caam-pkc-sec layer.
+This README file contains information on the contents of the meta-imx-ecdsa-sec layer.
 
 Please see the corresponding sections below for details.
 
 Maintainer: Marouene Boubakri <marouene.boubakri@nxp.com>
 
-To add the meta-ecdsa-blackkey layer to your build
+To add the meta-imx-ecdsa-sec layer to your build
 
-Run 'bitbake-layers add-layer meta-caam-pkc-sec'
+Run 'bitbake-layers add-layer meta-imx-ecdsa-sec'
 
 Please refer to the Application Note AN12838 for assistance on building and using Public Key Cryptography using CAAM Secure Key demo.
