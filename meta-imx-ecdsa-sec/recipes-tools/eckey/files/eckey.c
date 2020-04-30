@@ -147,8 +147,6 @@ static int export_key(const char *pem_file, const char *blob_file)
     ret = STATUS_SUCCESS;
 
 out:
-    if (key)
-        EC_KEY_free(key);
     if (blob_data.key)
         free(blob_data.key);
     if (blob_data.blob)
@@ -249,8 +247,6 @@ static int import_key(const char *blob_file, const char *pem_file)
     ret = STATUS_SUCCESS;
 
 out:
-    if (key)
-        EC_KEY_free(key);
     if (blob_data.key)
         free(blob_data.key);
     if (blob_data.blob)
