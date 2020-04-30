@@ -1,0 +1,821 @@
+From af450804f9245c5cb694032a6d623ce4d07c6cab Mon Sep 17 00:00:00 2001
+From: Marouene Boubakri <marouene.boubakri@nxp.com>
+Date: Tue, 28 Apr 2020 02:21:29 +0200
+Subject: [PATCH 1/1] linux-imx-4.19.35_1.0.0: caam: blob support driver
+
+---
+ drivers/crypto/caam/Kconfig     |  10 +
+ drivers/crypto/caam/Makefile    |   1 +
+ drivers/crypto/caam/caam_blob.c | 766 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 777 insertions(+)
+ create mode 100644 drivers/crypto/caam/caam_blob.c
+
+diff --git a/drivers/crypto/caam/Kconfig b/drivers/crypto/caam/Kconfig
+index 132df90..439251d 100644
+--- a/drivers/crypto/caam/Kconfig
++++ b/drivers/crypto/caam/Kconfig
+@@ -141,6 +141,16 @@ config CRYPTO_DEV_FSL_CAAM_ECDSA_API
+           To compile this as a module, choose M here: the module
+           will be called caam_ecdsa.
+ 
++config CRYPTO_DEV_FSL_CAAM_BLOB
++        tristate "Register a caam blob driver"
++        depends on CRYPTO_DEV_FSL_CAAM_JR
++        default n
++        help
++          Selecting this will allow caam blob support,
++		  encapsulate and decapsulate key/blob.
++          To compile this as a module, choose M here: the module
++          will be called caam_blob.
++
+ config CRYPTO_DEV_FSL_CAAM_RNG_API
+ 	tristate "Register caam device for hwrng API"
+ 	depends on CRYPTO_DEV_FSL_CAAM_JR
+diff --git a/drivers/crypto/caam/Makefile b/drivers/crypto/caam/Makefile
+index c4cc908..796fdcd 100644
+--- a/drivers/crypto/caam/Makefile
++++ b/drivers/crypto/caam/Makefile
+@@ -19,6 +19,7 @@ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM) += sm_store.o
+ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM_TEST) += sm_test.o
+ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SECVIO) += secvio.o
+ obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_ECDSA_API) += caam_ecdsa.o
++obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_BLOB) += caam_blob.o
+ 
+ caam-objs := ctrl.o
+ caam_jr-objs := jr.o key_gen.o error.o inst_rng.o
+diff --git a/drivers/crypto/caam/caam_blob.c b/drivers/crypto/caam/caam_blob.c
+new file mode 100644
+index 00000000..d2ed4ee
+--- /dev/null
++++ b/drivers/crypto/caam/caam_blob.c
+@@ -0,0 +1,766 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * @copyright 2020 NXP
++ *
++ * @file    caam_blob.c
++ *
++ * @brief   Key blob driver based on CAAM hardware
++ *
++ */
++#include <linux/of_irq.h>
++#include <linux/of_address.h>
++#include <linux/miscdevice.h>
++#include <linux/ioctl.h>
++#include <linux/types.h>
++
++#include "compat.h"
++#include "regs.h"
++#include "jr.h"
++#include "desc.h"
++#include "intern.h"
++#include "sm.h"
++
++/* Blob protocol protinfo bits */
++#define OP_PCL_BLOB_TK   0x0200
++#define OP_PCL_BLOB_EKT  0x0100
++
++#define OP_PCL_BLOB_K2KR_MEM         0x0000
++#define OP_PCL_BLOB_K2KR_C1KR        0x0010
++#define OP_PCL_BLOB_K2KR_C2KR        0x0030
++#define OP_PCL_BLOB_K2KR_AFHAS       0x0050
++#define OP_PCL_BLOB_K2KR_C2KR_SPLIT  0x0070
++
++#define OP_PCL_BLOB_PTXT_SECMEM  0x0008
++#define OP_PCL_BLOB_BLACK        0x0004
++
++#define OP_PCL_BLOB_FMT_NORMAL    0x0000
++#define OP_PCL_BLOB_FMT_MSTR      0x0002
++#define OP_PCL_BLOB_FMT_TEST      0x0003
++
++struct caam_blob_data {
++    u8 *key;
++    size_t key_len;
++    u8 *blob;
++    size_t blob_len;
++    u8 *keymod;
++    size_t keymod_len;
++};
++
++/**
++ * struct blob_device - the metadata of the caam key blob device node
++ */
++struct blob_device {
++    struct miscdevice misc_dev;
++    struct device *jr_dev;
++};
++
++/**
++ * per-device context
++ */
++static struct caam_ctx {
++    struct device *jr_dev;
++    struct blob_device *blob_dev;
++};
++
++static struct caam_ctx *caam_blob_ctx;
++
++#define DEVICE_NAME "caam_blob"
++
++#define CAAM_BLOB_MAGIC        'I'
++
++/**
++ * DOC: CAAM_BLOB_ENCAP - encapsulate a key into a blob
++ *
++ * Takes an caam_blob_data struct and returns it with the blob
++ */
++#define CAAM_BLOB_ENCAP _IOWR(CAAM_BLOB_MAGIC, 0, \
++        struct caam_blob_data)
++
++/**
++ * DOC: CAAM_BLOB_DECAP - decapsulate a blob into a key
++ *
++ * Takes an caam_blob_data struct and returns it with the key.
++ */
++#define CAAM_BLOB_DECAP _IOWR(CAAM_BLOB_MAGIC, 1, \
++        struct caam_blob_data)
++
++#ifndef GENMEM_KEYMOD_LEN
++#define GENMEM_KEYMOD_LEN 16
++#endif
++
++#define INITIAL_DESCSZ 16    /* size of tmp buffer for descriptor const. */
++
++#define MAX_KEY_LEN    (512 - BLOB_OVERHEAD)
++#define MAX_BLOB_LEN (MAX_KEY_LEN + BLOB_OVERHEAD)
++
++/**
++ * Pseudo-synchronous ring access functions for carrying out key
++ * encapsulation and decapsulation
++ */
++struct caam_job_result {
++    int error;
++    struct completion completion;
++};
++
++
++static struct blob_device *blob_dev;
++
++static struct blob_device *blob_device_create(void);
++static int blob_device_destroy(struct blob_device *blob_dev);
++static int blob_open(struct inode *inode, struct file *file);
++static int blob_release(struct inode *inode, struct file *file);
++static void sm_key_job_done(struct device *dev, u32 *desc,
++        u32 err, void *context);
++static int gen_mem_encap(struct device *jr_dev, void __user *secretbuf,
++        size_t keylen, void __user *kmodbuf, void __user *outbuf);
++static int gen_mem_decap(struct device *jr_dev, void __user *keyblobbuf,
++        size_t bloblen, void __user *kmodbuf, void __user *outbuf);
++static long blob_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
++
++static int blob_open(struct inode *inode, struct file *file)
++{
++
++    struct miscdevice *miscdev = file->private_data;
++    struct blob_device *dev = container_of(miscdev, struct blob_device, misc_dev);
++    struct device *jr_dev;
++
++    if (!dev->jr_dev) {
++        jr_dev = caam_jr_alloc();
++        if (IS_ERR(jr_dev)) {
++            pr_err("caam_blob: job ring device allocation for transform failed\n");
++            return -ENOMEM;
++        }
++        dev->jr_dev = jr_dev;
++    }
++
++    return 0;
++}
++
++static int blob_release(struct inode *inode, struct file *file)
++{
++    struct miscdevice *miscdev = file->private_data;
++    struct blob_device *dev = container_of(miscdev, struct blob_device, misc_dev);
++
++    if (dev && dev->jr_dev) {
++        caam_jr_free(dev->jr_dev);
++        dev->jr_dev = NULL;
++    }
++    return 0;
++}
++
++static void sm_key_job_done(struct device *dev, u32 *desc,
++        u32 err, void *context)
++{
++    struct caam_job_result *res = context;
++
++    res->error = err;    /* save off the error for postprocessing */
++    complete(&res->completion);    /* mark us complete */
++}
++
++/*
++ * Construct a blob encapsulation job descriptor
++ *
++ * This function dynamically constructs a blob encapsulation job descriptor
++ * from the following arguments:
++ *
++ * - desc    pointer to a pointer to the descriptor generated by this
++ *        function. Caller will be responsible to kfree() this
++ *        descriptor after execution.
++ * - keymod    Physical pointer to a key modifier, which must reside in a
++ *        contiguous piece of memory. Modifier will be assumed to be
++ *        8 bytes long for a blob of type SM_SECMEM, or 16 bytes long
++ *        for a blob of type SM_GENMEM (see blobtype argument).
++ * - secretbuf    Physical pointer to a secret, normally a black or red key,
++ *        possibly residing within an accessible secure memory page,
++ *        of the secret to be encapsulated to an output blob.
++ * - outbuf    Physical pointer to the destination buffer to receive the
++ *        encapsulated output. This buffer will need to be 48 bytes
++ *        larger than the input because of the added encapsulation data.
++ *        The generated descriptor will account for the increase in size,
++ *        but the caller must also account for this increase in the
++ *        buffer allocator.
++ * - secretsz    Size of input secret, in bytes. This is limited to 65536
++ *        less the size of blob overhead, since the length embeds into
++ *        DECO pointer in/out instructions.
++ * - keycolor   Determines if the source data is covered (black key) or
++ *        plaintext (red key). RED_KEY or BLACK_KEY are defined in
++ *        for this purpose.
++ * - blobtype    Determine if encapsulated blob should be a secure memory
++ *        blob (SM_SECMEM), with partition data embedded with key
++ *        material, or a general memory blob (SM_GENMEM).
++ * - auth    If BLACK_KEY source is covered via AES-CCM, specify
++ *        KEY_COVER_CCM, else uses AES-ECB (KEY_COVER_ECB).
++ *
++ * Upon completion, desc points to a buffer containing a CAAM job
++ * descriptor which encapsulates data into an externally-storable blob
++ * suitable for use across power cycles.
++ *
++ * This is an example of a black key encapsulation job into a general memory
++ * blob. Notice the 16-byte key modifier in the LOAD instruction. Also note
++ * the output 48 bytes longer than the input:
++ *
++ * [00] B0800008       jobhdr: stidx=0 len=8
++ * [01] 14400010           ld: ccb2-key len=16 offs=0
++ * [02] 08144891               ptr->@0x08144891
++ * [03] F800003A    seqoutptr: len=58
++ * [04] 01000000               out_ptr->@0x01000000
++ * [05] F000000A     seqinptr: len=10
++ * [06] 09745090               in_ptr->@0x09745090
++ * [07] 870D0004    operation: encap blob  reg=memory, black, format=normal
++ *
++ * This is an example of a red key encapsulation job for storing a red key
++ * into a secure memory blob. Note the 8 byte modifier on the 12 byte offset
++ * in the LOAD instruction; this accounts for blob permission storage:
++ *
++ * [00] B0800008       jobhdr: stidx=0 len=8
++ * [01] 14400C08           ld: ccb2-key len=8 offs=12
++ * [02] 087D0784               ptr->@0x087d0784
++ * [03] F8000050    seqoutptr: len=80
++ * [04] 09251BB2               out_ptr->@0x09251bb2
++ * [05] F0000020     seqinptr: len=32
++ * [06] 40000F31               in_ptr->@0x40000f31
++ * [07] 870D0008    operation: encap blob  reg=memory, red, sec_mem,
++ *                             format=normal
++ *
++ * Note: this function only generates 32-bit pointers at present, and should
++ * be refactored using a scheme that allows both 32 and 64 bit addressing
++ */
++
++static int blob_encap_jobdesc(u32 **desc, dma_addr_t keymod,
++        void *secretbuf, dma_addr_t outbuf,
++        u16 secretsz, u8 keycolor, u8 blobtype, u8 auth)
++{
++    u32 *tdesc, tmpdesc[INITIAL_DESCSZ];
++    u16 dsize, idx;
++
++    memset(tmpdesc, 0, INITIAL_DESCSZ * sizeof(u32));
++    idx = 1;
++
++    /*
++     * Key modifier works differently for secure/general memory blobs
++     * This accounts for the permission/protection data encapsulated
++     * within the blob if a secure memory blob is requested
++     */
++    if (blobtype == SM_SECMEM)
++        tmpdesc[idx++] = CMD_LOAD | LDST_CLASS_2_CCB |
++            LDST_SRCDST_BYTE_KEY |
++            ((12 << LDST_OFFSET_SHIFT) & LDST_OFFSET_MASK)
++            | (8 & LDST_LEN_MASK);
++    else /* is general memory blob */
++        tmpdesc[idx++] = CMD_LOAD | LDST_CLASS_2_CCB |
++            LDST_SRCDST_BYTE_KEY | (16 & LDST_LEN_MASK);
++
++    tmpdesc[idx++] = (u32)keymod;
++
++    /*
++     * Encapsulation output must include space for blob key encryption
++     * key and MAC tag
++     */
++    tmpdesc[idx++] = CMD_SEQ_OUT_PTR | (secretsz + BLOB_OVERHEAD);
++    tmpdesc[idx++] = (u32)outbuf;
++
++    /* Input data, should be somewhere in secure memory */
++    tmpdesc[idx++] = CMD_SEQ_IN_PTR | secretsz;
++    tmpdesc[idx++] = (u32)secretbuf;
++
++    /* Set blob encap, then color */
++    tmpdesc[idx] = CMD_OPERATION | OP_TYPE_ENCAP_PROTOCOL | OP_PCLID_BLOB;
++
++    if (blobtype == SM_SECMEM)
++        tmpdesc[idx] |= OP_PCL_BLOB_PTXT_SECMEM;
++
++    if (auth == KEY_COVER_CCM)
++        tmpdesc[idx] |= OP_PCL_BLOB_EKT;
++
++    if (keycolor == BLACK_KEY)
++        tmpdesc[idx] |= OP_PCL_BLOB_BLACK;
++
++    idx++;
++    tmpdesc[0] = CMD_DESC_HDR | HDR_ONE | (idx & HDR_DESCLEN_MASK);
++    dsize = idx * sizeof(u32);
++
++    tdesc = kmalloc(dsize, GFP_KERNEL | GFP_DMA);
++    if (tdesc == NULL)
++        return 0;
++
++    memcpy(tdesc, tmpdesc, dsize);
++    *desc = tdesc;
++    return dsize;
++}
++
++/*
++ * Construct a blob decapsulation job descriptor
++ *
++ * This function dynamically constructs a blob decapsulation job descriptor
++ * from the following arguments:
++ *
++ * - desc    pointer to a pointer to the descriptor generated by this
++ *        function. Caller will be responsible to kfree() this
++ *        descriptor after execution.
++ * - keymod    Physical pointer to a key modifier, which must reside in a
++ *        contiguous piece of memory. Modifier will be assumed to be
++ *        8 bytes long for a blob of type SM_SECMEM, or 16 bytes long
++ *        for a blob of type SM_GENMEM (see blobtype argument).
++ * - blobbuf    Physical pointer (into external memory) of the blob to
++ *        be decapsulated. Blob must reside in a contiguous memory
++ *        segment.
++ * - outbuf    Physical pointer of the decapsulated output, possibly into
++ *        a location within a secure memory page. Must be contiguous.
++ * - secretsz    Size of encapsulated secret in bytes (not the size of the
++ *        input blob).
++ * - keycolor   Determines if decapsulated content is encrypted (BLACK_KEY)
++ *        or left as plaintext (RED_KEY).
++ * - blobtype    Determine if encapsulated blob should be a secure memory
++ *        blob (SM_SECMEM), with partition data embedded with key
++ *        material, or a general memory blob (SM_GENMEM).
++ * - auth    If decapsulation path is specified by BLACK_KEY, then if
++ *        AES-CCM is requested for key covering use KEY_COVER_CCM, else
++ *        use AES-ECB (KEY_COVER_ECB).
++ *
++ * Upon completion, desc points to a buffer containing a CAAM job descriptor
++ * that decapsulates a key blob from external memory into a black (encrypted)
++ * key or red (plaintext) content.
++ *
++ * This is an example of a black key decapsulation job from a general memory
++ * blob. Notice the 16-byte key modifier in the LOAD instruction.
++ *
++ * [00] B0800008       jobhdr: stidx=0 len=8
++ * [01] 14400010           ld: ccb2-key len=16 offs=0
++ * [02] 08A63B7F               ptr->@0x08a63b7f
++ * [03] F8000010    seqoutptr: len=16
++ * [04] 01000000               out_ptr->@0x01000000
++ * [05] F000003A     seqinptr: len=58
++ * [06] 01000010               in_ptr->@0x01000010
++ * [07] 860D0004    operation: decap blob  reg=memory, black, format=normal
++ *
++ * This is an example of a red key decapsulation job for restoring a red key
++ * from a secure memory blob. Note the 8 byte modifier on the 12 byte offset
++ * in the LOAD instruction:
++ *
++ * [00] B0800008       jobhdr: stidx=0 len=8
++ * [01] 14400C08           ld: ccb2-key len=8 offs=12
++ * [02] 01000000               ptr->@0x01000000
++ * [03] F8000020    seqoutptr: len=32
++ * [04] 400000E6               out_ptr->@0x400000e6
++ * [05] F0000050     seqinptr: len=80
++ * [06] 08F0C0EA               in_ptr->@0x08f0c0ea
++ * [07] 860D0008    operation: decap blob  reg=memory, red, sec_mem,
++ *                   format=normal
++ *
++ * Note: this function only generates 32-bit pointers at present, and should
++ * be refactored using a scheme that allows both 32 and 64 bit addressing
++ */
++
++static int blob_decap_jobdesc(u32 **desc, dma_addr_t keymod, dma_addr_t blobbuf,
++        u8 *outbuf, u16 secretsz, u8 keycolor,
++        u8 blobtype, u8 auth)
++{
++    u32 *tdesc, tmpdesc[INITIAL_DESCSZ];
++    u16 dsize, idx;
++
++    memset(tmpdesc, 0, INITIAL_DESCSZ * sizeof(u32));
++    idx = 1;
++
++    /* Load key modifier */
++    if (blobtype == SM_SECMEM)
++        tmpdesc[idx++] = CMD_LOAD | LDST_CLASS_2_CCB |
++            LDST_SRCDST_BYTE_KEY |
++            ((12 << LDST_OFFSET_SHIFT) & LDST_OFFSET_MASK)
++            | (8 & LDST_LEN_MASK);
++    else /* is general memory blob */
++        tmpdesc[idx++] = CMD_LOAD | LDST_CLASS_2_CCB |
++            LDST_SRCDST_BYTE_KEY | (16 & LDST_LEN_MASK);
++
++    tmpdesc[idx++] = (u32)keymod;
++
++    /* Compensate BKEK + MAC tag over size of encapsulated secret */
++    tmpdesc[idx++] = CMD_SEQ_IN_PTR | (secretsz + BLOB_OVERHEAD);
++    tmpdesc[idx++] = (u32)blobbuf;
++    tmpdesc[idx++] = CMD_SEQ_OUT_PTR | secretsz;
++    tmpdesc[idx++] = (u32)outbuf;
++
++    /* Decapsulate from secure memory partition to black blob */
++    tmpdesc[idx] = CMD_OPERATION | OP_TYPE_DECAP_PROTOCOL | OP_PCLID_BLOB;
++
++    if (blobtype == SM_SECMEM)
++        tmpdesc[idx] |= OP_PCL_BLOB_PTXT_SECMEM;
++
++    if (auth == KEY_COVER_CCM)
++        tmpdesc[idx] |= OP_PCL_BLOB_EKT;
++
++    if (keycolor == BLACK_KEY)
++        tmpdesc[idx] |= OP_PCL_BLOB_BLACK;
++
++    idx++;
++    tmpdesc[0] = CMD_DESC_HDR | HDR_ONE | (idx & HDR_DESCLEN_MASK);
++    dsize = idx * sizeof(u32);
++
++    tdesc = kmalloc(dsize, GFP_KERNEL | GFP_DMA);
++    if (tdesc == NULL)
++        return 0;
++
++    memcpy(tdesc, tmpdesc, dsize);
++    *desc = tdesc;
++    return dsize;
++}
++
++static int gen_mem_encap(struct device *jr_dev, void __user *secretbuf,
++        size_t keylen, void __user *kmodbuf, void __user *outbuf)
++{
++    int retval = 0;
++    u32 dsize;
++    u32 __iomem *encapdesc = NULL;
++    dma_addr_t secret_dma = 0, keymod_dma = 0, outbuf_dma = 0;
++    u8 __iomem *lsecret = NULL, *lkeymod = NULL, *loutbuf = NULL;
++    struct caam_job_result testres;
++
++    /* Build/map/flush the scret */
++    lsecret = kmalloc(keylen, GFP_KERNEL | GFP_DMA);
++    if (!lsecret) {
++        dev_err(jr_dev, "caam_blob: %s can't alloc for key\n", __func__);
++        retval = -ENOMEM;
++        goto out;
++    }
++    if (copy_from_user(lsecret, secretbuf, keylen)) {
++        dev_err(jr_dev, "caam_blob: %s can't copy for key\n", __func__);
++        retval = -EFAULT;
++        goto out;
++    }
++    secret_dma = dma_map_single(jr_dev, lsecret, keylen,
++            DMA_TO_DEVICE);
++
++    /* Build/map/flush the key modifier */
++    lkeymod = kmalloc(GENMEM_KEYMOD_LEN, GFP_KERNEL | GFP_DMA);
++    if (!lkeymod) {
++        dev_err(jr_dev, "caam_blob: %s can't alloc for keymod\n", __func__);
++        retval = -ENOMEM;
++        goto out;
++    }
++    if (copy_from_user(lkeymod, kmodbuf, GENMEM_KEYMOD_LEN)) {
++        dev_err(jr_dev, "caam_blob: %s can't Copy for keymod\n", __func__);
++        retval = -EFAULT;
++        goto out;
++    }
++    keymod_dma = dma_map_single(jr_dev, lkeymod, GENMEM_KEYMOD_LEN,
++            DMA_TO_DEVICE);
++
++    loutbuf = kmalloc(keylen + BLOB_OVERHEAD, GFP_KERNEL | GFP_DMA);
++    if (!lkeymod) {
++        dev_err(jr_dev, "caam_blob: %s can't alloc for output\n", __func__);
++        retval = -ENOMEM;
++        goto out;
++    }
++    outbuf_dma = dma_map_single(jr_dev, loutbuf, keylen + BLOB_OVERHEAD,
++            DMA_FROM_DEVICE);
++    dsize = blob_encap_jobdesc(&encapdesc, keymod_dma, (void *)secret_dma, outbuf_dma,
++            keylen, BLACK_KEY, SM_GENMEM, KEY_COVER_ECB);
++    if (!dsize) {
++        dev_err(jr_dev, "caam_blob: can't alloc an encapsulation descriptor\n");
++        retval = -ENOMEM;
++        goto out;
++    }
++
++    init_completion(&testres.completion);
++
++    retval = caam_jr_enqueue(jr_dev, encapdesc, sm_key_job_done,
++            &testres);
++    if (!retval) {
++        wait_for_completion_interruptible(&testres.completion);
++
++        if (testres.error) {
++            retval = -EFAULT;
++            dev_err(jr_dev, "caam_blob: job ring error\n");
++            goto out;
++        }
++
++        dma_sync_single_for_cpu(jr_dev, outbuf_dma, keylen + BLOB_OVERHEAD,
++                DMA_FROM_DEVICE);
++
++        if (copy_to_user(outbuf, loutbuf, keylen + BLOB_OVERHEAD)) {
++            retval = -EFAULT;
++            dev_err(jr_dev, "caam_blob: can't copy for output\n");
++            goto out;
++        }
++    }
++
++out:
++    if (outbuf_dma)
++        dma_unmap_single(jr_dev, outbuf_dma, keylen + BLOB_OVERHEAD,
++                DMA_FROM_DEVICE);
++    if (keymod_dma)
++        dma_unmap_single(jr_dev, keymod_dma, GENMEM_KEYMOD_LEN, DMA_TO_DEVICE);
++
++    if (secret_dma)
++        dma_unmap_single(jr_dev, secret_dma, keylen, DMA_TO_DEVICE);
++
++    kfree(encapdesc);
++    kfree(lkeymod);
++    kfree(lsecret);
++    kfree(loutbuf);
++
++    return retval;
++}
++
++static int gen_mem_decap(struct device *jr_dev, void __user *keyblobbuf,
++        size_t bloblen, void __user *kmodbuf, void __user *outbuf)
++{
++    int retval = 0;
++    size_t keylen = bloblen - BLOB_OVERHEAD;
++    u32 dsize;
++    dma_addr_t keyblob_dma = 0, keymod_dma = 0, outbuf_dma = 0;
++    u8 __iomem *lkeyblob = NULL, *lkeymod = NULL, *loutbuf = NULL;
++    struct caam_job_result testres;
++    u32 __iomem *decapdesc = NULL;
++
++    /* Build/map/flush the scret */
++    lkeyblob = kmalloc(bloblen, GFP_KERNEL | GFP_DMA);
++    if (!lkeyblob) {
++        dev_err(jr_dev, "caam_blob: %s can't alloc for keylob\n", __func__);
++        retval = -ENOMEM;
++        goto out;
++    }
++    if (copy_from_user(lkeyblob, keyblobbuf, bloblen)) {
++        dev_err(jr_dev, "caam_blob: %s can't copy for blob\n", __func__);
++        retval = -EFAULT;
++        goto out;
++    }
++    keyblob_dma = dma_map_single(jr_dev, lkeyblob, bloblen,
++            DMA_TO_DEVICE);
++
++    /* Build/map/flush the key modifier */
++    lkeymod = kmalloc(GENMEM_KEYMOD_LEN, GFP_KERNEL | GFP_DMA);
++    if (!lkeymod) {
++        dev_err(jr_dev, "caam_blob: %s can't alloc for keymod\n", __func__);
++        retval = -ENOMEM;
++        goto out;
++    }
++    if (copy_from_user(lkeymod, kmodbuf, GENMEM_KEYMOD_LEN)) {
++        dev_err(jr_dev, "caam_blob: %s can't copy for keymod\n", __func__);
++        retval = -EFAULT;
++        goto out;
++    }
++    keymod_dma = dma_map_single(jr_dev, lkeymod, GENMEM_KEYMOD_LEN,
++            DMA_TO_DEVICE);
++
++    loutbuf = kmalloc(keylen, GFP_KERNEL | GFP_DMA);
++    if (!loutbuf) {
++        dev_err(jr_dev, "caam_blob: %s can't alloc for outbuf\n", __func__);
++        retval = -ENOMEM;
++        goto out;
++    }
++    outbuf_dma = dma_map_single(jr_dev, loutbuf, keylen,
++            DMA_FROM_DEVICE);
++
++    /* Build the encapsulation job descriptor */
++    dsize = blob_decap_jobdesc(&decapdesc, keymod_dma, keyblob_dma, (u8 *)outbuf_dma,
++            keylen, BLACK_KEY, SM_GENMEM, KEY_COVER_ECB);
++    if (!dsize) {
++        dev_err(jr_dev, "caam_blob: can't alloc a decapsulation descriptor\n");
++        retval = -ENOMEM;
++        goto out;
++    }
++
++    init_completion(&testres.completion);
++
++    retval = caam_jr_enqueue(jr_dev, decapdesc, sm_key_job_done,
++            &testres);
++    if (!retval) {
++        wait_for_completion_interruptible(&testres.completion);
++
++        if (testres.error) {
++            retval = -EFAULT;
++            dev_err(jr_dev, "caam_blob: job ring error\n");
++            goto out;
++        }
++
++        dma_sync_single_for_cpu(jr_dev, outbuf_dma, keylen,
++                DMA_FROM_DEVICE);
++
++        if (copy_to_user(outbuf, loutbuf, keylen)) {
++            retval = -EFAULT;
++            dev_err(jr_dev, "caam_blob: can't copy for output\n");
++            goto out;
++        }
++    }
++
++out:
++    if (outbuf_dma)
++        dma_unmap_single(jr_dev, outbuf_dma, keylen,
++                DMA_FROM_DEVICE);
++    if (keymod_dma)
++        dma_unmap_single(jr_dev, keymod_dma, GENMEM_KEYMOD_LEN,
++                DMA_TO_DEVICE);
++    if (keyblob_dma)
++        dma_unmap_single(jr_dev, keyblob_dma, bloblen,
++                DMA_TO_DEVICE);
++    kfree(decapdesc);
++    kfree(lkeymod);
++    kfree(lkeyblob);
++    kfree(loutbuf);
++
++    return retval;
++}
++
++static long blob_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++    int retval = 0;
++    struct caam_blob_data blob_data;
++    struct miscdevice *miscdev = file->private_data;
++    struct blob_device *dev = container_of(miscdev, struct blob_device, misc_dev);
++
++
++    if (copy_from_user(&blob_data, (void *)arg, sizeof(blob_data))) {
++        retval = -EFAULT;
++        goto err;
++    }
++
++    if (!blob_data.key || !blob_data.blob ||
++            (blob_data.key_len + BLOB_OVERHEAD != blob_data.blob_len) ||
++            (blob_data.key_len > MAX_KEY_LEN) ||
++            (blob_data.blob_len > MAX_BLOB_LEN) ||
++            (blob_data.blob_len <= BLOB_OVERHEAD) ||
++            (blob_data.keymod_len != GENMEM_KEYMOD_LEN)) {
++        retval = -EINVAL;
++        goto err;
++    }
++
++    printk(KERN_INFO "caam_blob: %s key_len:%d blob_len:%d\n",
++            __func__, blob_data.key_len, blob_data.blob_len);
++
++    switch (cmd) {
++        case CAAM_BLOB_ENCAP:
++            {
++                retval = gen_mem_encap(dev->jr_dev, blob_data.key, blob_data.key_len,
++                        blob_data.keymod, blob_data.blob);
++                break;
++            }
++        case CAAM_BLOB_DECAP:
++            {
++                retval = gen_mem_decap(dev->jr_dev, blob_data.blob, blob_data.blob_len,
++                        blob_data.keymod, blob_data.key);
++                break;
++            }
++        default:
++            return -ENOTTY;
++    }
++
++err:
++    return retval;
++}
++
++static const struct file_operations blob_fops = {
++    .owner          = THIS_MODULE,
++    .open           = blob_open,
++    .release        = blob_release,
++    .unlocked_ioctl = blob_ioctl,
++};
++
++static struct blob_device *blob_device_create(void)
++{
++    struct blob_device *idev;
++    int ret;
++
++    idev = kzalloc(sizeof(struct blob_device), GFP_KERNEL);
++    if (!idev)
++        return ERR_PTR(-ENOMEM);
++
++    idev->misc_dev.minor = MISC_DYNAMIC_MINOR;
++    idev->misc_dev.name = "caam_blob";
++    idev->misc_dev.fops = &blob_fops;
++    idev->misc_dev.parent = NULL;
++    ret = misc_register(&idev->misc_dev);
++    if (ret) {
++        pr_err("caam_blob: failed to register device.\n");
++        return ERR_PTR(ret);
++    }
++
++    return idev;
++}
++
++static int blob_device_destroy(struct blob_device *blob_dev)
++{
++    if ((blob_dev) && (blob_dev->jr_dev)) {
++        caam_jr_free(blob_dev->jr_dev);
++        blob_dev->jr_dev = NULL;
++    }
++
++    if (blob_dev)
++        misc_deregister(&blob_dev->misc_dev);
++
++    return 0;
++}
++
++static int __init caam_blob_init(void)
++{
++    struct device *jr_dev;
++    struct device_node *dev_node;
++    struct platform_device *pdev;
++    struct device *ctrldev;
++    struct caam_drv_private *priv;
++
++    printk(KERN_INFO DEVICE_NAME " init");
++
++    dev_node = of_find_compatible_node(NULL, NULL, "fsl,sec-v4.0");
++    if (!dev_node) {
++        dev_node = of_find_compatible_node(NULL, NULL, "fsl,sec4.0");
++        if (!dev_node)
++            return -ENODEV;
++    }
++
++    pdev = of_find_device_by_node(dev_node);
++    if (!pdev) {
++        of_node_put(dev_node);
++        return -ENODEV;
++    }
++
++    ctrldev = &pdev->dev;
++
++    priv = dev_get_drvdata(ctrldev);
++
++    of_node_put(dev_node);
++
++    /*
++     * If priv is NULL, it's probably because the caam driver wasn't
++     * properly initialized (e.g. RNG4 init failed). Thus, bail out here.
++     */
++    if (!priv)
++        return -ENODEV;
++
++    jr_dev = caam_jr_alloc();
++    if (IS_ERR(jr_dev)) {
++        caam_blob_ctx = NULL;
++        pr_err("Job Ring Device allocation for transform failed\n");
++        return PTR_ERR(jr_dev);
++    }
++    caam_blob_ctx = kmalloc(sizeof(struct caam_ctx), GFP_DMA | GFP_KERNEL);
++    if (unlikely(!caam_blob_ctx))
++        return -ENOMEM;
++
++    caam_blob_ctx->jr_dev = jr_dev;
++
++    caam_blob_ctx->blob_dev = blob_device_create();
++
++    if(unlikely(!caam_blob_ctx->blob_dev))
++        return -ENODEV;
++
++    caam_blob_ctx->blob_dev->jr_dev = jr_dev;
++
++    return 0;
++}
++
++static void __exit caam_blob_exit(void)
++{
++    printk(KERN_ALERT DEVICE_NAME " exit\n");
++
++    blob_device_destroy(caam_blob_ctx->blob_dev);
++    caam_jr_free(caam_blob_ctx->jr_dev);
++    kfree(caam_blob_ctx);
++    caam_blob_ctx = NULL;
++}
++
++module_init(caam_blob_init);
++module_exit(caam_blob_exit);
++
++MODULE_LICENSE("Dual BSD/GPL");
++MODULE_DESCRIPTION("CAAM blob driver");
++MODULE_AUTHOR("Marouene Boubakri <marouene.boubakri@nxp.com>");
+\ No newline at end of file
+-- 
+2.7.4
+

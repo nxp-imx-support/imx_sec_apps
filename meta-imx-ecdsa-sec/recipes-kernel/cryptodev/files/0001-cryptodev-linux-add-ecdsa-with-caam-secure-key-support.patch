@@ -1,0 +1,617 @@
+From f1153c10e26f8ac6fd1a4b3e001790f04cb6e850 Mon Sep 17 00:00:00 2001
+From: Marouene Boubakri <marouene.boubakri@nxp.com>
+Date: Thu, 30 Apr 2020 05:51:52 +0000
+Subject: [PATCH 1/1] cryptodev-1.10-linux: add ecdsa with caam secure key support
+
+---
+ cryptlib.h         |  80 ++++++++++++++++++++++
+ crypto/cryptodev.h | 158 +++++++++++++++++++++++++++++++++++++++++--
+ cryptodev_int.h    |   4 +-
+ ioctl.c            |  22 ++++--
+ main.c             | 165 ++++++++++++++++++++++++++++++++++++++++++++-
+ 5 files changed, 418 insertions(+), 11 deletions(-)
+
+diff --git a/cryptlib.h b/cryptlib.h
+index 5136eef..d0efce9 100644
+--- a/cryptlib.h
++++ b/cryptlib.h
+@@ -89,6 +89,72 @@ struct hash_data {
+ 	} async;
+ };
+ 
++/* ECDSA */
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(4, 3, 0))
++
++/* Max size of any CAAM descriptor in 32-bit words, inclusive of header */
++#define MAX_CAAM_DESCSIZE	64
++
++/* CAAM ECDSA PDB */
++typedef struct{
++	u8 caam_ec_id;
++	u8 field_type; 	/* ECC binary field (F2M) or prime field (Fp) */
++	u32 l_len; 		/* Size of the field (L) */
++	u32 n_len;  	/* Size of the subgroup (N) */
++}ec_curve_data_t;
++
++typedef struct{
++u32 cid;
++ec_curve_data_t data;
++}ec_curve_t;
++
++
++typedef struct {
++	u8 *addr_s;
++	u8 *addr_f;
++	u8 *addr_c;
++	u8 *addr_d;
++	dma_addr_t phy_addr_s;
++	dma_addr_t phy_addr_f;
++	dma_addr_t phy_addr_c;
++	dma_addr_t phy_addr_d;
++	u32 curve_id;
++	const ec_curve_t *curve;
++	u8 key_color;
++	u32 *desc;
++} caam_ecdsa_sign_t;
++
++typedef struct {
++	u8 *addr_w;
++	u8 *addr_f;
++	u8 *addr_c;
++	u8 *addr_d;
++	/*The temporary buffer must be at least 2L bytes.*/
++	u8 *addr_tmp;
++	dma_addr_t phy_addr_w;
++	dma_addr_t phy_addr_f;
++	dma_addr_t phy_addr_c;
++	dma_addr_t phy_addr_d;
++	dma_addr_t phy_addr_tmp;
++	u32 curve_id;
++	const ec_curve_t *curve;
++	u8 	key_color;
++	u32 *desc;
++} caam_ecdsa_verify_t;
++
++typedef struct {
++	u8 *addr_s;
++	u8 *addr_w;
++	dma_addr_t phy_addr_s;
++	dma_addr_t phy_addr_w;
++	u32 curve_id;
++	const ec_curve_t *curve;
++	u8 	key_color;
++	u32 *desc;
++} caam_ecdsa_keygen_t;
++
++
++#endif
+ int cryptodev_hash_final(struct hash_data *hdata, void *output);
+ ssize_t cryptodev_hash_update(struct hash_data *hdata,
+ 			struct scatterlist *sg, size_t len);
+@@ -102,6 +168,20 @@ int cryptodev_hash_copy(struct hash_data *dst, struct hash_data *src);
+ 
+ #if (LINUX_VERSION_CODE > KERNEL_VERSION(4, 3, 0))
+ int crypto_bn_modexp(struct kernel_crypt_pkop *pkop);
++
++int caam_pk_status(void);
++struct device *caam_ecdsa_get_jrdev(void);
++
++/* CAAM ECDSA primitives */
++int caam_ecdsa_sign_init(caam_ecdsa_sign_t *ecdsa_sign);
++int caam_ecdsa_sign_deinit(caam_ecdsa_sign_t *ecdsa_sign);
++int caam_ecdsa_sign(caam_ecdsa_sign_t *ecdsa_sign);
++int caam_ecdsa_verify_init(caam_ecdsa_verify_t *ecdsa_verify);
++int caam_ecdsa_verify_deinit(caam_ecdsa_verify_t *ecdsa_verify);
++int caam_ecdsa_verify(caam_ecdsa_verify_t *ecdsa_verify);
++int caam_ecdsa_keygen_init(caam_ecdsa_keygen_t *ecdsa_keygen);
++int caam_ecdsa_keygen_deinit(caam_ecdsa_keygen_t *ecdsa_keygen);
++int caam_ecdsa_keygen(caam_ecdsa_keygen_t *ecdsa_keygen);
+ #endif
+ 
+ #endif
+diff --git a/crypto/cryptodev.h b/crypto/cryptodev.h
+index c09cce8..213e933 100644
+--- a/crypto/cryptodev.h
++++ b/crypto/cryptodev.h
+@@ -51,6 +51,11 @@ enum cryptodev_crypto_op_t {
+ 	CRYPTO_SHA2_384,
+ 	CRYPTO_SHA2_512,
+ 	CRYPTO_SHA2_224_HMAC,
++
++	CRYPTO_ASYM_ECDSA_SIGN,
++	CRYPTO_ASYM_ECDSA_VERIFY,
++	CRYPTO_ASYM_ECC_KEYGEN,
++
+ 	CRYPTO_ALGORITHM_ALL, /* Keep updated - see below */
+ };
+ 
+@@ -84,6 +89,8 @@ struct session_op {
+ 	__u32	cipher;		/* cryptodev_crypto_op_t */
+ 	__u32	mac;		/* cryptodev_crypto_op_t */
+ 
++	__u32	acipher;	/* cryptodev_crk_op_t */
++
+ 	__u32	keylen;
+ 	__u8	__user *key;
+ 	__u32	mackeylen;
+@@ -144,7 +151,7 @@ struct crypt_auth_op {
+ 	 * encrypted in-place (src==dst). */
+ 	__u8	__user *src;	/* data to be encrypted and authenticated */
+ 	__u8	__user *dst;	/* pointer to output data. Must have
+-	                         * space for tag. For TLS this should be at least 
++	                         * space for tag. For TLS this should be at least
+ 	                         * len + tag_size + block_size for padding */
+ 
+ 	__u8    __user *tag;    /* where the tag will be copied to. TLS mode
+@@ -173,7 +180,7 @@ struct crypt_auth_op {
+  * copies the tag just after data.
+  */
+ 
+-/* In TLS mode (used for CBC ciphers that required padding) 
++/* In TLS mode (used for CBC ciphers that required padding)
+  * the following are required:
+  *  flags   : COP_FLAG_AEAD_TLS_TYPE
+  *  iv      : the initialization vector
+@@ -194,7 +201,7 @@ struct crypt_auth_op {
+  *  iv      : the initialization vector
+  *  auth_len: the length of the data to be authenticated. This must
+  *            include the SRTP header + SRTP payload (data to be encrypted) + rest
+- *            
++ *
+  *  len     : length of data to be encrypted
+  *  auth_src: pointer the data to be authenticated. Should point at the same buffer as src.
+  *  src     : pointer to the data to be encrypted.
+@@ -212,9 +219,9 @@ struct crypt_auth_op {
+ #define COP_FLAG_FINAL		(1 << 1) /* multi-update final hash mode */
+ #define COP_FLAG_WRITE_IV	(1 << 2) /* update the IV during operation */
+ #define COP_FLAG_NO_ZC		(1 << 3) /* do not zero-copy */
+-#define COP_FLAG_AEAD_TLS_TYPE  (1 << 4) /* authenticate and encrypt using the 
++#define COP_FLAG_AEAD_TLS_TYPE  (1 << 4) /* authenticate and encrypt using the
+                                           * TLS protocol rules */
+-#define COP_FLAG_AEAD_SRTP_TYPE  (1 << 5) /* authenticate and encrypt using the 
++#define COP_FLAG_AEAD_SRTP_TYPE  (1 << 5) /* authenticate and encrypt using the
+                                            * SRTP protocol rules */
+ #define COP_FLAG_RESET		(1 << 6) /* multi-update reset the state.
+                                           * should be used in combination
+@@ -239,7 +246,9 @@ struct crparam {
+ 
+ /* input of CIOCKEY */
+ struct crypt_kop {
++	__u32	ses;		/* session identifier */
+ 	__u32	crk_op;		/* cryptodev_crk_op_t */
++	__u32	crk_flags;     /* public key cipher operation flags */
+ 	__u32	crk_status;
+ 	__u16	crk_iparams;
+ 	__u16	crk_oparams;
+@@ -253,6 +262,9 @@ enum cryptodev_crk_op_t {
+ 	CRK_DSA_SIGN = 2,
+ 	CRK_DSA_VERIFY = 3,
+ 	CRK_DH_COMPUTE_KEY = 4,
++	CRK_ECDSA_SIGN = 18,
++	CRK_ECDSA_VERIFY = 19,
++	CRK_ECC_KEYGEN = 20,
+ 	CRK_ALGORITHM_ALL
+ };
+ 
+@@ -278,6 +290,142 @@ struct cphash_op {
+ #define CRF_DSA_VERIFY		(1 << CRK_DSA_VERIFY)
+ #define CRF_DH_COMPUTE_KEY	(1 << CRK_DH_COMPUTE_KEY)
+ 
++#define CRF_ECDSA_SIGN			(1 << CRK_ECDSA_SIGN)
++#define CRF_ECDSA_VERIFY		(1 << CRK_ECDSA_VERIFY)
++#define CRF_ECC_KEYGEN			(1 << CRK_ECC_KEYGEN)
++
++#define	CAAM_KEY_COLOR_RED   0
++#define	CAAM_KEY_COLOR_BLACK 1
++
++#define CAAM_EC_CURVE_P_192 0
++#define CAAM_EC_CURVE_P_224 1
++#define CAAM_EC_CURVE_P_256 2
++#define CAAM_EC_CURVE_P_384 3
++#define CAAM_EC_CURVE_P_521 4
++#define CAAM_EC_CURVE_PRIME192V1 5
++#define CAAM_EC_CURVE_PRIME192V2 6
++#define CAAM_EC_CURVE_PRIME192V3 7
++#define CAAM_EC_CURVE_PRIME239V1 8
++#define CAAM_EC_CURVE_PRIME239V2 9
++#define CAAM_EC_CURVE_PRIME239V3 10
++#define CAAM_EC_CURVE_PRIME256V1 11
++#define CAAM_EC_CURVE_SECP112R1 12
++#define CAAM_EC_CURVE_SECP160K1 13
++#define CAAM_EC_CURVE_SECP160R1 14
++#define CAAM_EC_CURVE_SECP160R2 15
++#define CAAM_EC_CURVE_SECP192K1 16
++#define CAAM_EC_CURVE_SECP192R1 17
++#define CAAM_EC_CURVE_SECP224R1 18
++#define CAAM_EC_CURVE_SECP224K1 19
++#define CAAM_EC_CURVE_SECP256K1 20
++#define CAAM_EC_CURVE_SECP256R1 21
++#define CAAM_EC_CURVE_SECP384R1 22
++#define CAAM_EC_CURVE_SECP521R1 23
++#define CAAM_EC_CURVE_SECT113R1 24
++#define CAAM_EC_CURVE_SECT163R1 25
++#define CAAM_EC_CURVE_SECT163R2 26
++#define CAAM_EC_CURVE_SECT163K1 27
++#define CAAM_EC_CURVE_SECT193R1 28
++#define CAAM_EC_CURVE_SECT193R2 29
++#define CAAM_EC_CURVE_SECT233K1 30
++#define CAAM_EC_CURVE_SECT233R1 31
++#define CAAM_EC_CURVE_SECT239K1 32
++#define CAAM_EC_CURVE_SECT283K1 33
++#define CAAM_EC_CURVE_SECT283R1 34
++#define CAAM_EC_CURVE_SECT409K1 35
++#define CAAM_EC_CURVE_SECT409R1 36
++#define CAAM_EC_CURVE_SECT571K1 37
++#define CAAM_EC_CURVE_SECT571R1 38
++#define CAAM_EC_CURVE_ANSIX9P192R1 39
++#define CAAM_EC_CURVE_ANSIX9P224R1 40
++#define CAAM_EC_CURVE_ANSIX9P256R1 41
++#define CAAM_EC_CURVE_ANSIX9P384R1 42
++#define CAAM_EC_CURVE_ANSIX9P521R1 43
++#define CAAM_EC_CURVE_ANSIX9P160K1 44
++#define CAAM_EC_CURVE_ANSIX9P160R2 45
++#define CAAM_EC_CURVE_ANSIX9P224K1 46
++#define CAAM_EC_CURVE_ANSIX9P160R1 47
++#define CAAM_EC_CURVE_ANSIX9P192K1 48
++#define CAAM_EC_CURVE_ANSIX9P256K1 49
++#define CAAM_EC_CURVE_ANSIX9T163R2 50
++#define CAAM_EC_CURVE_ANSIX9T233R1 51
++#define CAAM_EC_CURVE_ANSIX9T283R1 52
++#define CAAM_EC_CURVE_ANSIX9T163K1 53
++#define CAAM_EC_CURVE_ANSIX9T233K1 54
++#define CAAM_EC_CURVE_ANSIX9T283K1 55
++#define CAAM_EC_CURVE_ANSIX9T571K1 56
++#define CAAM_EC_CURVE_ANSIX9T163R1 57
++#define CAAM_EC_CURVE_ANSIX9T193R1 58
++#define CAAM_EC_CURVE_ANSIX9T193R2 59
++#define CAAM_EC_CURVE_ANSIX9T239K1 60
++#define CAAM_EC_CURVE_ANSIX9T409R1 61
++#define CAAM_EC_CURVE_ANSIX9T571R1 62
++#define CAAM_EC_CURVE_ANSIX9T409K1 63
++#define CAAM_EC_CURVE_WTLS1 64
++#define CAAM_EC_CURVE_WTLS3 65
++#define CAAM_EC_CURVE_WTLS4 66
++#define CAAM_EC_CURVE_WTLS5 67
++#define CAAM_EC_CURVE_WTLS6 68
++#define CAAM_EC_CURVE_WTLS7 69
++#define CAAM_EC_CURVE_WTLS8 70
++#define CAAM_EC_CURVE_WTLS9 71
++#define CAAM_EC_CURVE_WTLS10 72
++#define CAAM_EC_CURVE_WTLS11 73
++#define CAAM_EC_CURVE_WTLS12 74
++#define CAAM_EC_CURVE_ECDSA_256 75
++#define CAAM_EC_CURVE_ECDSA_384 76
++#define CAAM_EC_CURVE_ECDSA_521 77
++#define CAAM_EC_CURVE_BRAINPOOLP160R1 78
++#define CAAM_EC_CURVE_BRAINPOOLP160T1 79
++#define CAAM_EC_CURVE_BRAINPOOLP192R1 80
++#define CAAM_EC_CURVE_BRAINPOOLP192T1 81
++#define CAAM_EC_CURVE_BRAINPOOLP224R1 82
++#define CAAM_EC_CURVE_BRAINPOOLP224T1 83
++#define CAAM_EC_CURVE_BRAINPOOLP256R1 84
++#define CAAM_EC_CURVE_BRAINPOOLP256T1 85
++#define CAAM_EC_CURVE_BRAINPOOLP320R1 86
++#define CAAM_EC_CURVE_BRAINPOOLP320T1 87
++#define CAAM_EC_CURVE_BRAINPOOLP384R1 88
++#define CAAM_EC_CURVE_BRAINPOOLP384T1 89
++#define CAAM_EC_CURVE_BRAINPOOLP512R1 90
++#define CAAM_EC_CURVE_BRAINPOOLP512T1 91
++#define CAAM_EC_CURVE_B_163 92
++#define CAAM_EC_CURVE_B_233 93
++#define CAAM_EC_CURVE_B_283 94
++#define CAAM_EC_CURVE_B_409 95
++#define CAAM_EC_CURVE_B_571 96
++#define CAAM_EC_CURVE_K_163 97
++#define CAAM_EC_CURVE_K_233 98
++#define CAAM_EC_CURVE_K_283 99
++#define CAAM_EC_CURVE_K_409 100
++#define CAAM_EC_CURVE_K_571 101
++#define CAAM_EC_CURVE_ECP_GROUP_19 102
++#define CAAM_EC_CURVE_ECP_GROUP_20 103
++#define CAAM_EC_CURVE_ECP_GROUP_21 104
++#define CAAM_EC_CURVE_EC2N_GROUP_3 105
++#define CAAM_EC_CURVE_EC2N_GROUP_4 106
++#define CAAM_EC_CURVE_C2PNB163V1 107
++#define CAAM_EC_CURVE_C2PNB163V2 108
++#define CAAM_EC_CURVE_C2PNB163V3 109
++#define CAAM_EC_CURVE_ECPRGF192RANDOM 110
++#define CAAM_EC_CURVE_ECPRGF224RANDOM 111
++#define CAAM_EC_CURVE_ECPRGF256RANDOM 112
++#define CAAM_EC_CURVE_ECPRGF384RANDOM 113
++#define CAAM_EC_CURVE_ECPRGF521RANDOM 114
++#define CAAM_EC_CURVE_EC2NGF163RANDOM 115
++#define CAAM_EC_CURVE_EC2NGF233RANDOM 116
++#define CAAM_EC_CURVE_EC2NGF283RANDOM 117
++#define CAAM_EC_CURVE_EC2NGF409RANDOM 118
++#define CAAM_EC_CURVE_EC2NGF571RANDOM 119
++#define CAAM_EC_CURVE_EC2NGF163KOBLITZ 120
++#define CAAM_EC_CURVE_EC2NGF233KOBLITZ 121
++#define CAAM_EC_CURVE_EC2NGF283KOBLITZ 122
++#define CAAM_EC_CURVE_EC2NGF409KOBLITZ 123
++#define CAAM_EC_CURVE_EC2NGF571KOBLITZ 124
++#define CAAM_EC_CURVE_OAKLEY_3 125
++#define CAAM_EC_CURVE_OAKLEY_4 126
++#define CAAM_EC_CURVE_UNDEFINED	127
++
+ 
+ /* ioctl's. Compatible with old linux cryptodev.h
+  */
+diff --git a/cryptodev_int.h b/cryptodev_int.h
+index b0a4b0b..deb8c02 100644
+--- a/cryptodev_int.h
++++ b/cryptodev_int.h
+@@ -61,6 +61,8 @@ struct compat_session_op {
+ 	uint32_t	cipher;		/* cryptodev_crypto_op_t */
+ 	uint32_t	mac;		/* cryptodev_crypto_op_t */
+ 
++	__u32	acipher;	/* cryptodev_crk_op_t */
++
+ 	uint32_t	keylen;
+ 	compat_uptr_t	key;		/* pointer to key data */
+ 	uint32_t	mackeylen;
+@@ -123,7 +125,7 @@ struct kernel_crypt_pkop {
+ 	struct cryptodev_result result; /* updated by completion handler */
+ };
+ 
+-int crypto_run_asym(struct kernel_crypt_pkop *pkop);
++int crypto_run_asym(struct fcrypt *fcr, struct kernel_crypt_pkop *pkop);
+ #endif
+ 
+ /* auth */
+diff --git a/ioctl.c b/ioctl.c
+index ba7c210..2660cb7 100644
+--- a/ioctl.c
++++ b/ioctl.c
+@@ -124,7 +124,7 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
+ 	} keys;
+ 
+ 	/* Does the request make sense? */
+-	if (unlikely(!sop->cipher && !sop->mac)) {
++	if (unlikely(!sop->cipher && !sop->mac && !sop->acipher)) {
+ 		ddebug(1, "Both 'cipher' and 'mac' unset.");
+ 		return -EINVAL;
+ 	}
+@@ -233,6 +233,8 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
+ 	ses_new = kzalloc(sizeof(*ses_new), GFP_KERNEL);
+ 	if (!ses_new)
+ 		return -ENOMEM;
++	if (0 != sop->acipher)
++		goto asymmetric_cipher;
+ 
+ 	/* Set-up crypto transform. */
+ 	if (alg_name) {
+@@ -301,6 +303,7 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
+ 		goto session_error;
+ 	}
+ 
++asymmetric_cipher:
+ 	/* put the new session to the list */
+ 	get_random_bytes(&ses_new->sid, sizeof(ses_new->sid));
+ 	mutex_init(&ses_new->sem);
+@@ -860,7 +863,8 @@ cryptodev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg_)
+ 		ses = 0;
+ 		if (crypto_has_alg("rsa", 0, 0))
+ 			ses = CRF_MOD_EXP;
+-
++		else if( 0 != caam_pk_status())
++			ses = CRF_ECDSA_SIGN | CRF_ECDSA_VERIFY | CRF_ECC_KEYGEN;
+ 		return put_user(ses, p);
+ 	case CRIOGET:
+ 		fd = clonefd(filp);
+@@ -878,8 +882,12 @@ cryptodev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg_)
+ 	case CIOCKEY:
+ 		ret = copy_from_user(&pkop.pkop, arg, sizeof(struct crypt_kop));
+ 		if (ret == 0)
+-			ret = crypto_run_asym(&pkop);
+-		return ret;
++			ret = crypto_run_asym(fcr, &pkop);
++		if (unlikely(ret)) {
++			dwarning(1, "Error in crypto_run_asym");
++			return ret;
++		}
++		return copy_to_user(arg, &pkop.pkop, sizeof(struct crypt_kop));
+ #endif
+ 	case CIOCGSESSION:
+ 		if (unlikely(copy_from_user(&sop, arg, sizeof(sop))))
+@@ -964,6 +972,9 @@ static inline void
+ compat_to_session_op(struct compat_session_op *compat, struct session_op *sop)
+ {
+ 	sop->cipher = compat->cipher;
++
++	sop->acipher = compat->acipher;
++
+ 	sop->mac = compat->mac;
+ 	sop->keylen = compat->keylen;
+ 
+@@ -977,6 +988,9 @@ static inline void
+ session_op_to_compat(struct session_op *sop, struct compat_session_op *compat)
+ {
+ 	compat->cipher = sop->cipher;
++
++	compat->acipher = sop->acipher;
++
+ 	compat->mac = sop->mac;
+ 	compat->keylen = sop->keylen;
+ 
+diff --git a/main.c b/main.c
+index 3ae1d06..53fa4b7 100644
+--- a/main.c
++++ b/main.c
+@@ -267,10 +267,173 @@ out_unlock:
+ 	return ret;
+ }
+ #if (LINUX_VERSION_CODE > KERNEL_VERSION(4, 3, 0))
+-int crypto_run_asym(struct kernel_crypt_pkop *pkop)
++
++int _crypto_run_ecdsa(struct fcrypt *fcr, struct kernel_crypt_pkop *pkop) {
++
++	struct csession *ses_ptr = NULL;
++	struct crypt_kop *kop = &pkop->pkop;
++	int err;
++
++	/* this also enters ses_ptr->sem */
++	ses_ptr = crypto_get_session_by_sid(fcr, kop->ses);
++	if (unlikely(!ses_ptr)) {
++		derr(1, "invalid session ID=0x%08X", kop->ses);
++		return -EINVAL;
++	}
++
++	switch (kop->crk_op) {
++	case CRK_ECDSA_SIGN:
++		{
++			caam_ecdsa_sign_t ecdsa_sign;
++			if (unlikely(kop->crk_iparams < 2)) {
++				derr(1, "invalid parameters iparams=0x%08X \n", kop->crk_iparams);
++				err = -EINVAL;
++				goto out_unlock;
++			}
++			// L_LEN from C
++			if (unlikely((kop->crk_param[2].crp_nbits + 7)/8 <= 0x7F))
++				derr(1, "N more than 7 bits \n");
++			// P_LEN from S
++			if (unlikely((kop->crk_param[0].crp_nbits + 7)/8 <= 0x3FF))
++				derr(1, "P more than 10 bits \n");
++
++			ecdsa_sign.key_color = (kop->crk_flags >> 8) & 1;
++			ecdsa_sign.curve_id = kop->crk_flags & 0xFF;
++
++			err = caam_ecdsa_sign_init(&ecdsa_sign);
++			if(unlikely(0 != err)) {
++				derr(1, "caam_ecdsa_sign_init error \n");
++	            err = -EFAULT;
++				goto out_unlock;
++			}
++			if (unlikely(copy_from_user(ecdsa_sign.addr_s, kop->crk_param[0].crp_p, ecdsa_sign.curve->data.n_len))) {
++				derr(1, "copy_from_user error s \n");
++	            err = -EFAULT;
++	            goto out_ecdsa_sign;
++	        }
++			if (unlikely(copy_from_user(ecdsa_sign.addr_f, kop->crk_param[1].crp_p, ecdsa_sign.curve->data.n_len))) {
++				derr(1, "copy_from_user error f \n");
++	            err = -EFAULT;
++	            goto out_ecdsa_sign;
++	        }
++			err = caam_ecdsa_sign(&ecdsa_sign);
++			if(unlikely(0 != err))
++				derr(1, "ECDSA sign error code =0x%08X", err);
++			else {
++				if (unlikely(copy_to_user(kop->crk_param[kop->crk_iparams].crp_p, ecdsa_sign.addr_c, ecdsa_sign.curve->data.n_len)))
++					err = -EFAULT;
++				if (unlikely(copy_to_user(kop->crk_param[kop->crk_iparams+1].crp_p, ecdsa_sign.addr_d, ecdsa_sign.curve->data.n_len)))
++					err = -EFAULT;
++			}
++		out_ecdsa_sign:
++			caam_ecdsa_sign_deinit(&ecdsa_sign);
++		}
++		break;
++	case CRK_ECDSA_VERIFY:
++		{
++			caam_ecdsa_verify_t ecdsa_verify;
++			if (unlikely(kop->crk_iparams < 4)) {
++				derr(1, "invalid parameters iparams=0x%08X \n", kop->crk_iparams);
++				err = -EINVAL;
++				goto out_unlock;
++			}
++			if (unlikely((kop->crk_param[0].crp_nbits + 7)/8 <= 0x3FF))
++				derr(1, "P more than 10 bits \n");
++			if (unlikely((kop->crk_param[2].crp_nbits + 7)/8 <= 0x7F))
++				derr(1, "N more than 7 bits \n");
++
++			ecdsa_verify.key_color = (kop->crk_flags >> 8) & 1;
++			ecdsa_verify.curve_id = kop->crk_flags & 0xFF;
++
++			err = caam_ecdsa_verify_init(&ecdsa_verify);
++			if(unlikely(0 != err)) {
++				derr(1, "caam_ecdsa_verify_init error \n");
++	            err = -EFAULT;
++				goto out_unlock;
++			}
++			if (unlikely(copy_from_user(ecdsa_verify.addr_w, kop->crk_param[0].crp_p, ecdsa_verify.curve->data.l_len * 2))) {
++				derr(1, "copy_from_user error w \n");
++	            err = -EFAULT;
++	            goto out_ecdsa_verify;
++	        }
++			if (unlikely(copy_from_user(ecdsa_verify.addr_f, kop->crk_param[1].crp_p, ecdsa_verify.curve->data.n_len))) {
++				derr(1, "copy_from_user error f \n");
++	            err = -EFAULT;
++	            goto out_ecdsa_verify;
++			}
++			if (unlikely(copy_from_user(ecdsa_verify.addr_c, kop->crk_param[2].crp_p, ecdsa_verify.curve->data.n_len))) {
++				derr(1, "copy_from_user error c \n");
++	            err = -EFAULT;
++	            goto out_ecdsa_verify;
++			}
++			if (unlikely(copy_from_user(ecdsa_verify.addr_d, kop->crk_param[3].crp_p, ecdsa_verify.curve->data.n_len))) {
++				derr(1, "copy_from_user error d \n");
++	            err = -EFAULT;
++	            goto out_ecdsa_verify;
++			}
++
++			err = caam_ecdsa_verify(&ecdsa_verify);
++
++			if (false == err) {
++				kop->crk_status = 0;
++			}
++			else {
++				kop->crk_status = 1;
++				err = 0;
++			}
++
++		out_ecdsa_verify:
++			caam_ecdsa_verify_deinit(&ecdsa_verify);
++		}
++		break;
++	case CRK_ECC_KEYGEN:
++		{
++			caam_ecdsa_keygen_t ecdsa_keygen;
++			// P_LEN from S
++			if (unlikely((kop->crk_param[0].crp_nbits + 7)/8 <= 0x3FF))
++				derr(1, "P more than 10 bits \n");
++
++			ecdsa_keygen.key_color = (kop->crk_flags >> 8) & 1;
++			ecdsa_keygen.curve_id = kop->crk_flags & 0xFF;
++
++			err = caam_ecdsa_keygen_init(&ecdsa_keygen);
++			if(unlikely(0 != err)) {
++				derr(1, "caam_ecdsa_keygen_init error\n");
++	            err = -EFAULT;
++				goto out_unlock;
++			}
++			err = caam_ecdsa_keygen(&ecdsa_keygen);
++			if(unlikely(0 != err))
++				derr(1, "ECC keygen error code =0x%08X", err);
++			else {
++				if (unlikely(copy_to_user(kop->crk_param[kop->crk_iparams].crp_p, ecdsa_keygen.addr_s, ecdsa_keygen.curve->data.l_len)))
++					err = -EFAULT;
++				if (unlikely(copy_to_user(kop->crk_param[kop->crk_iparams+1].crp_p, ecdsa_keygen.addr_w, ecdsa_keygen.curve->data.l_len*2)))
++					err = -EFAULT;
++			}
++			caam_ecdsa_keygen_deinit(&ecdsa_keygen);
++		}
++		break;
++	default:
++		err = -EINVAL;
++		break;
++	}
++
++out_unlock:
++	crypto_put_session(ses_ptr);
++
++	return err;
++}
++
++int crypto_run_asym(struct fcrypt *fcr, struct kernel_crypt_pkop *pkop)
+ {
++
+ 	int err;
+ 
++	if((pkop->pkop.crk_op >= CRK_ECDSA_SIGN) && (pkop->pkop.crk_op <= CRK_ECC_KEYGEN)) {
++		return _crypto_run_ecdsa(fcr, pkop);
++	}
++
+ 	pkop->s = crypto_alloc_akcipher("rsa", 0, 0);
+ 	if (IS_ERR(pkop->s))
+ 		return PTR_ERR(pkop->s);
+-- 
+2.20.0
+
