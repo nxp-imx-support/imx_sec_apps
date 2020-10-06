@@ -1,0 +1,598 @@
+From fa5e0cc064906e1e1beaebb6af016a07f847ceec Mon Sep 17 00:00:00 2001
+From: Marouene Boubakri <marouene.boubakri@nxp.com>
+Date: Thu, 30 Apr 2020 06:00:30 +0000
+Subject: [PATCH 1/1] openssl-1.1.1g: eng_devcrypto.c: add ecdsa with caam
+ secure key support
+
+---
+ crypto/engine/eng_devcrypto.c | 536 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 535 insertions(+), 1 deletion(-)
+
+diff --git a/crypto/engine/eng_devcrypto.c b/crypto/engine/eng_devcrypto.c
+index 717d7c2..f18c21b 100644
+--- a/crypto/engine/eng_devcrypto.c
++++ b/crypto/engine/eng_devcrypto.c
+@@ -20,6 +20,7 @@
+ #include <openssl/err.h>
+ #include <openssl/engine.h>
+ #include <openssl/objects.h>
++#include <openssl/ec.h>
+ #include <crypto/cryptodev.h>
+ 
+ #include "crypto/engine.h"
+@@ -37,6 +38,9 @@
+  */
+ static int cfd;
+ 
++/* Holds EC_KEY implementation */
++static EC_KEY_METHOD *devcrypto_ec = NULL;
++
+ static int clean_devcrypto_session(struct session_op *sess) {
+     if (ioctl(cfd, CIOCFSESSION, &sess->ses) < 0) {
+         SYSerr(SYS_F_IOCTL, errno);
+@@ -734,6 +738,529 @@ static int devcrypto_digests(ENGINE *e, const EVP_MD **digest,
+ 
+ #endif
+ 
++
++ /******************************************************************************
++  *
++ * ECDSA with secure key
++ *
++ *****/
++static void zapparams(struct crypt_kop *kop)
++{
++    int i;
++
++    for (i = 0; i < kop->crk_iparams + kop->crk_oparams; i++) {
++        OPENSSL_free(kop->crk_param[i].crp_p);
++        kop->crk_param[i].crp_p = NULL;
++        kop->crk_param[i].crp_nbits = 0;
++    }
++}
++
++/* Curve name to CAAM curve id conversion */
++static int cname2cid(int curve_name)
++{
++	switch(curve_name)
++	{
++	case NID_X9_62_prime192v1: return  CAAM_EC_CURVE_P_192;
++	case NID_secp224r1: return  CAAM_EC_CURVE_P_224;
++	case NID_X9_62_prime256v1: return  CAAM_EC_CURVE_P_256;
++	case NID_secp384r1: return  CAAM_EC_CURVE_P_384;
++	case NID_secp521r1: return  CAAM_EC_CURVE_P_521;
++	case NID_X9_62_prime192v2: return  CAAM_EC_CURVE_PRIME192V2;
++	case NID_X9_62_prime192v3: return  CAAM_EC_CURVE_PRIME192V3;
++	case NID_X9_62_prime239v1: return  CAAM_EC_CURVE_PRIME239V1;
++	case NID_X9_62_prime239v2: return  CAAM_EC_CURVE_PRIME239V2;
++	case NID_X9_62_prime239v3: return  CAAM_EC_CURVE_PRIME239V3;
++	case NID_secp112r1: return  CAAM_EC_CURVE_SECP112R1;
++	case NID_secp160k1: return  CAAM_EC_CURVE_SECP160K1;
++	case NID_secp160r1: return  CAAM_EC_CURVE_SECP160R1;
++	case NID_secp160r2: return  CAAM_EC_CURVE_SECP160R2;
++	case NID_secp192k1: return  CAAM_EC_CURVE_SECP192K1;
++	case NID_secp224k1: return  CAAM_EC_CURVE_SECP224K1;
++	case NID_secp256k1: return  CAAM_EC_CURVE_SECP256K1;
++	case NID_sect113r1: return  CAAM_EC_CURVE_SECT113R1;
++	case NID_sect163r1: return  CAAM_EC_CURVE_SECT163R1;
++	case NID_sect163r2: return  CAAM_EC_CURVE_SECT163R2;
++	case NID_sect163k1: return  CAAM_EC_CURVE_SECT163K1;
++	case NID_sect193r1: return  CAAM_EC_CURVE_SECT193R1;
++	case NID_sect193r2: return  CAAM_EC_CURVE_SECT193R2;
++	case NID_sect233k1: return  CAAM_EC_CURVE_SECT233K1;
++	case NID_sect233r1: return  CAAM_EC_CURVE_SECT233R1;
++	case NID_sect239k1: return  CAAM_EC_CURVE_SECT239K1;
++	case NID_sect283k1: return  CAAM_EC_CURVE_SECT283K1;
++	case NID_sect283r1: return  CAAM_EC_CURVE_SECT283R1;
++	case NID_sect409k1: return  CAAM_EC_CURVE_SECT409K1;
++	case NID_sect409r1: return  CAAM_EC_CURVE_SECT409R1;
++	case NID_sect571k1: return  CAAM_EC_CURVE_SECT571K1;
++	case NID_sect571r1: return  CAAM_EC_CURVE_SECT571R1;
++	case NID_wap_wsg_idm_ecid_wtls1: return  CAAM_EC_CURVE_WTLS1;
++	case NID_wap_wsg_idm_ecid_wtls3: return  CAAM_EC_CURVE_WTLS3;
++	case NID_wap_wsg_idm_ecid_wtls4: return  CAAM_EC_CURVE_WTLS4;
++	case NID_wap_wsg_idm_ecid_wtls5: return  CAAM_EC_CURVE_WTLS5;
++	case NID_wap_wsg_idm_ecid_wtls6: return  CAAM_EC_CURVE_WTLS6;
++	case NID_wap_wsg_idm_ecid_wtls7: return  CAAM_EC_CURVE_WTLS7;
++	case NID_wap_wsg_idm_ecid_wtls8: return  CAAM_EC_CURVE_WTLS8;
++	case NID_wap_wsg_idm_ecid_wtls9: return  CAAM_EC_CURVE_WTLS9;
++	case NID_wap_wsg_idm_ecid_wtls10: return  CAAM_EC_CURVE_WTLS10;
++	case NID_brainpoolP160r1: return  CAAM_EC_CURVE_BRAINPOOLP160R1;
++	case NID_brainpoolP160t1: return  CAAM_EC_CURVE_BRAINPOOLP160T1;
++	case NID_brainpoolP192r1: return  CAAM_EC_CURVE_BRAINPOOLP192R1;
++	case NID_brainpoolP192t1: return  CAAM_EC_CURVE_BRAINPOOLP192T1;
++	case NID_brainpoolP224r1: return  CAAM_EC_CURVE_BRAINPOOLP224R1;
++	case NID_brainpoolP224t1: return  CAAM_EC_CURVE_BRAINPOOLP224T1;
++	case NID_brainpoolP256r1: return  CAAM_EC_CURVE_BRAINPOOLP256R1;
++	case NID_brainpoolP256t1: return  CAAM_EC_CURVE_BRAINPOOLP256T1;
++	case NID_brainpoolP320r1: return  CAAM_EC_CURVE_BRAINPOOLP320R1;
++	case NID_brainpoolP320t1: return  CAAM_EC_CURVE_BRAINPOOLP320T1;
++	case NID_brainpoolP384r1: return  CAAM_EC_CURVE_BRAINPOOLP384R1;
++	case NID_brainpoolP384t1: return  CAAM_EC_CURVE_BRAINPOOLP384T1;
++	case NID_brainpoolP512r1: return  CAAM_EC_CURVE_BRAINPOOLP512R1;
++	case NID_brainpoolP512t1: return  CAAM_EC_CURVE_BRAINPOOLP512T1;
++	case NID_X9_62_c2pnb163v1: return  CAAM_EC_CURVE_C2PNB163V1;
++	case NID_X9_62_c2pnb163v2: return  CAAM_EC_CURVE_C2PNB163V2;
++	case NID_X9_62_c2pnb163v3: return  CAAM_EC_CURVE_C2PNB163V3;
++	case NID_ipsec3: return  CAAM_EC_CURVE_OAKLEY_3;
++	case NID_ipsec4: return  CAAM_EC_CURVE_OAKLEY_4;
++	default: return CAAM_EC_CURVE_UNDEFINED;
++	}
++}
++
++static void destroy_all_ec_methods(void)
++{
++	EC_KEY_METHOD_free(devcrypto_ec);
++}
++
++static int devcrypto_ec_sign_setup (EC_KEY *eckey, BN_CTX *ctx,
++			BIGNUM **kinv, BIGNUM **r)
++{
++	return 1;
++}
++
++static ECDSA_SIG *devcrypto_ec_sign_sig (const unsigned char *dgst, int dgst_len,
++			const BIGNUM *inv, const BIGNUM *rp,
++			EC_KEY *eckey)
++{
++	ECDSA_SIG *ecdsaret = NULL;
++	BIGNUM *r = NULL, *s = NULL;
++	int nlen;
++	int tmp_buf_len;
++	struct session_op sess;
++	struct crypt_kop kop;
++	const BIGNUM * priv_key = NULL;
++	unsigned char *tmp_buf = NULL;
++	const EC_GROUP* group = NULL;
++
++	/* input sanitization */
++	if ((group = EC_KEY_get0_group(eckey)) == NULL ||
++			(priv_key = EC_KEY_get0_private_key(eckey)) == NULL) {
++		perror("NULL()\n");
++		goto err;
++	}
++
++	memset(&sess, 0, sizeof(sess));
++	memset(&kop, 0, sizeof(kop));
++
++	sess.acipher = CRYPTO_ASYM_ECDSA_SIGN;
++	if (ioctl(cfd, CIOCGSESSION, &sess)) {
++		perror("ioctl(CIOCGSESSION)\n");
++		goto err;
++	}
++
++	nlen =(EC_GROUP_order_bits(group)+7)/8;
++
++	kop.crk_flags |= cname2cid(EC_GROUP_get_curve_name(group));
++	kop.crk_flags |= (CAAM_KEY_COLOR_BLACK << 8);
++
++	kop.crk_op = CRK_ECDSA_SIGN;
++	kop.ses = sess.ses;
++
++	tmp_buf_len = BN_num_bytes(priv_key);
++
++	tmp_buf = OPENSSL_malloc(tmp_buf_len);
++	if (NULL == tmp_buf) {
++		perror("OPENSSL_malloc()\n");
++		goto out;
++	}
++	BN_bn2bin(priv_key, tmp_buf);
++
++	/* Set parameter private key */
++	kop.crk_param[0].crp_p = OPENSSL_malloc(tmp_buf_len);
++	if(NULL == kop.crk_param[0].crp_p)
++	{
++		perror("OPENSSL_malloc()\n");
++		goto out;
++	}
++	memset(kop.crk_param[0].crp_p, 0, tmp_buf_len);
++	kop.crk_param[0].crp_nbits = tmp_buf_len * 8;
++	memcpy(kop.crk_param[0].crp_p, tmp_buf, tmp_buf_len);
++
++	/* Set parameter f (or m) */
++	kop.crk_param[1].crp_p = OPENSSL_malloc(dgst_len);
++	if(NULL == kop.crk_param[1].crp_p)
++	{
++		perror("OPENSSL_malloc()\n");
++		goto out;
++	}
++	memset(kop.crk_param[1].crp_p, 0, dgst_len);
++	kop.crk_param[1].crp_nbits = dgst_len * 8;
++	memcpy(kop.crk_param[1].crp_p, dgst, dgst_len);
++	kop.crk_iparams = 2;
++
++	kop.crk_param[kop.crk_iparams].crp_p = calloc(nlen, sizeof(char));
++	kop.crk_param[kop.crk_iparams].crp_nbits = nlen * 8;
++	kop.crk_param[kop.crk_iparams + 1].crp_p = calloc(nlen, sizeof(char));
++	kop.crk_param[kop.crk_iparams + 1].crp_nbits = nlen * 8;
++	kop.crk_oparams = 2;
++
++	if (ioctl(cfd, CIOCKEY, &kop) == 0) {
++		ecdsaret = ECDSA_SIG_new();
++		if (ecdsaret == NULL) {
++			perror("ECDSA_SIG_new()");
++			goto out;
++		}
++
++		r = BN_new ();
++		s = BN_new ();
++
++		if (r) {
++			BN_bin2bn(kop.crk_param[kop.crk_iparams].crp_p, (kop.crk_param[kop.crk_iparams].crp_nbits + 7)/8, r);
++		}
++		if (s) {
++			BN_bin2bn(kop.crk_param[kop.crk_iparams + 1].crp_p, (kop.crk_param[kop.crk_iparams + 1].crp_nbits + 7)/8, s);
++		}
++
++		if (!ECDSA_SIG_set0 (ecdsaret, r, s))
++		{
++			ecdsaret = NULL;
++			perror("ECDSA_SIG_set0()");
++			goto out;
++		}
++	}
++out:
++	/* Finish session */
++	if (ioctl(cfd, CIOCFSESSION, &sess.ses)) {
++		perror("ioctl(CIOCFSESSION)");
++	}
++	zapparams(&kop);
++
++err:
++	if(tmp_buf)
++	OPENSSL_free(tmp_buf);
++	return (ecdsaret);
++}
++
++static int devcrypto_ec_sign (int type, const unsigned char *dgst,
++                                        int dlen, unsigned char *sig,
++                                        unsigned int *siglen,
++                                        const BIGNUM *kinv, const BIGNUM *r,
++                                        EC_KEY *eckey)
++{
++	ECDSA_SIG *s;
++	s = devcrypto_ec_sign_sig(dgst, dlen, kinv, r, eckey);
++	if (s == NULL) {
++		*siglen = 0;
++		return 0;
++	}
++	*siglen = i2d_ECDSA_SIG(s, &sig);
++	ECDSA_SIG_free(s);
++	return 1;
++}
++
++static int devcrypto_ec_do_verify(const unsigned char *dgst, int dgst_len,
++const ECDSA_SIG *sig, EC_KEY *eckey)
++{
++	struct session_op sess;
++	struct crypt_kop kop;
++	const EC_GROUP* group = NULL;
++	int ret = -1;
++
++	const BIGNUM *r = NULL;
++	const BIGNUM *s = NULL;
++	int tmp_buf_len;
++	unsigned char* tmp_buf = NULL;
++	u_int8_t *pubKey2 = NULL;
++
++	/* input sanitization */
++	if (eckey == NULL || (group = EC_KEY_get0_group(eckey)) == NULL ||
++			EC_KEY_get0_public_key(eckey) == NULL || sig == NULL) {
++		perror("NULL()");
++		goto err;
++	}
++
++	memset(&sess, 0, sizeof(sess));
++	memset(&kop, 0, sizeof(kop));
++
++	sess.acipher = CRYPTO_ASYM_ECDSA_VERIFY;
++
++	if (ioctl(cfd, CIOCGSESSION, &sess)) {
++		perror("ioctl(CIOCGSESSION)\n");
++		goto err;
++	}
++
++	kop.crk_flags |= cname2cid(EC_GROUP_get_curve_name(group));
++	kop.crk_flags |= (CAAM_KEY_COLOR_BLACK << 8);
++
++	kop.crk_op = CRK_ECDSA_VERIFY;
++	kop.ses = sess.ses;
++
++	/* Set parameter public key */
++	tmp_buf_len = i2o_ECPublicKey(eckey, NULL);
++
++	if (tmp_buf_len == 0) {
++		perror("error: EC_POINT_point2oct() failed.\n");
++		goto out;
++	}
++
++	tmp_buf = OPENSSL_malloc(tmp_buf_len);
++	if (!tmp_buf) {
++		perror("OPENSSL_malloc()");
++		goto err;
++	}
++	pubKey2 = tmp_buf;
++	tmp_buf_len = i2o_ECPublicKey(eckey, &pubKey2);
++
++	tmp_buf_len-=1;
++
++	/* Set parameter public key */
++	kop.crk_param[0].crp_p = OPENSSL_malloc(tmp_buf_len);
++	if(NULL == kop.crk_param[0].crp_p)
++	    goto out;
++	memset(kop.crk_param[0].crp_p, 0, tmp_buf_len);
++	kop.crk_param[0].crp_nbits = tmp_buf_len * 8;
++	memcpy(kop.crk_param[0].crp_p, tmp_buf+1, tmp_buf_len);
++
++	/* Set parameter f (or m) */
++	kop.crk_param[1].crp_p = OPENSSL_malloc(dgst_len);
++	if(NULL == kop.crk_param[1].crp_p)
++	    goto out;
++	memset(kop.crk_param[1].crp_p, 0, dgst_len);
++	kop.crk_param[1].crp_nbits = dgst_len * 8;
++	memcpy(kop.crk_param[1].crp_p, dgst, dgst_len);
++
++	ECDSA_SIG_get0(sig, &r, &s);
++	/* Set parameter c (or r) */
++	tmp_buf_len = BN_num_bytes(r);
++	tmp_buf = OPENSSL_malloc(tmp_buf_len);
++	if (NULL == tmp_buf) {
++		perror("OPENSSL_malloc()");
++		goto err;
++	}
++	BN_bn2bin(r, tmp_buf);
++	kop.crk_param[2].crp_p = OPENSSL_malloc(tmp_buf_len);
++	if(NULL == kop.crk_param[2].crp_p)
++	    goto out;
++	memset(kop.crk_param[2].crp_p, 0, tmp_buf_len);
++	kop.crk_param[2].crp_nbits = tmp_buf_len * 8;
++	memcpy(kop.crk_param[2].crp_p, tmp_buf, tmp_buf_len);
++
++	/* Set parameter d (or s) */
++	tmp_buf_len = BN_num_bytes(s);
++	tmp_buf = OPENSSL_malloc(tmp_buf_len);
++	if (NULL == tmp_buf) {
++		perror("OPENSSL_malloc()");
++		goto err;
++	}
++	BN_bn2bin(s, tmp_buf);
++	kop.crk_param[3].crp_p = OPENSSL_malloc(tmp_buf_len);
++	if(NULL == kop.crk_param[3].crp_p)
++	    goto out;
++	memset(kop.crk_param[3].crp_p, 0, tmp_buf_len);
++	kop.crk_param[3].crp_nbits = tmp_buf_len * 8;
++	memcpy(kop.crk_param[3].crp_p, tmp_buf, tmp_buf_len);
++
++	kop.crk_iparams = 4;
++
++	if (ioctl(cfd, CIOCKEY, &kop) == 0) {
++		if (kop.crk_status == 1){
++			ret = 1;
++		}
++		else if (kop.crk_status == 0) {
++			ret = 0	;
++		}
++	}
++
++out:
++	/* Finish session */
++	if (ioctl(cfd, CIOCFSESSION, &sess.ses)) {
++		perror("ioctl(CIOCFSESSION)");
++	}
++	zapparams(&kop);
++
++err:
++	if(tmp_buf)
++	    OPENSSL_free(tmp_buf);
++	return ret;
++}
++
++static int devcrypto_ec_verify(int type, const unsigned
++                                            char *dgst, int dgst_len,
++                                            const unsigned char *sigbuf,
++                                            int sig_len, EC_KEY *eckey)
++{
++	ECDSA_SIG *s;
++	const unsigned char *p = sigbuf;
++	unsigned char *der = NULL;
++	int derlen = -1;
++	int ret = -1;
++
++	s = ECDSA_SIG_new();
++	if (s == NULL)
++		return (ret);
++	if (d2i_ECDSA_SIG(&s, &p, sig_len) == NULL)
++		goto err;
++	/* Ensure signature uses DER and doesn't have trailing garbage */
++	derlen = i2d_ECDSA_SIG(s, &der);
++	if (derlen != sig_len || memcmp(sigbuf, der, derlen))
++		goto err;
++	ret = devcrypto_ec_do_verify(dgst, dgst_len, s, eckey);
++err:
++	if (derlen > 0) {
++		OPENSSL_cleanse(der, derlen);
++		OPENSSL_free(der);
++	}
++	ECDSA_SIG_free(s);
++	return (ret);
++
++}
++
++int devcrypto_ec_keygen(EC_KEY *eckey)
++{
++	struct session_op sess;
++	struct crypt_kop kop;
++
++	int ret = 0;
++	int alloc_priv = 0, alloc_pub = 0;
++	BN_CTX *ctx = NULL;
++	BIGNUM *priv_key = NULL, *order = NULL;
++	EC_POINT *pub_key = NULL;
++	unsigned char *pub_key_buf = NULL;
++	const EC_GROUP *group;
++	size_t pub_key_buf_sz = 0;
++	int plen;
++
++	if (eckey == NULL || ((group = EC_KEY_get0_group(eckey)) == NULL)) {
++		perror("NULL()");
++		return 0;
++	}
++
++	if ((ctx = BN_CTX_new()) == NULL) {
++		perror("BN_CTX_new()");
++		goto err;
++	}
++	BN_CTX_start(ctx);
++	if ((order = BN_CTX_get(ctx)) == NULL) {
++		perror("BN_CTX_get()");
++		goto err;
++	}
++
++	memset(&sess, 0, sizeof(sess));
++	memset(&kop, 0, sizeof(kop));
++	sess.acipher = CRYPTO_ASYM_ECC_KEYGEN;
++
++	if (ioctl(cfd, CIOCGSESSION, &sess)) {
++		perror("ioctl(CIOCGSESSION)");
++		goto err;
++	}
++
++	plen = (EC_GROUP_get_degree(group)+7)/8;
++
++	kop.crk_op = CRK_ECC_KEYGEN;
++	kop.ses = sess.ses;
++
++	kop.crk_flags |= cname2cid(EC_GROUP_get_curve_name(group));
++	kop.crk_flags |= (CAAM_KEY_COLOR_BLACK << 8);
++
++	kop.crk_iparams = 0;
++	kop.crk_param[kop.crk_iparams].crp_p = calloc(plen, sizeof(char));
++	kop.crk_param[kop.crk_iparams].crp_nbits = plen*8;
++	kop.crk_param[kop.crk_iparams + 1].crp_p = calloc(plen*2, sizeof(char));
++	kop.crk_param[kop.crk_iparams + 1].crp_nbits = plen*16;
++	kop.crk_oparams = 2;
++
++	if (ioctl(cfd, CIOCKEY, &kop) == 0) {
++
++		if ((priv_key = (BIGNUM *)EC_KEY_get0_private_key(eckey)) == NULL) {
++			priv_key = BN_new();
++			if (priv_key == NULL) {
++				perror("EC_KEY_get0_private_key()");
++				goto err;
++			}
++			alloc_priv = 1;
++		}
++
++		if (alloc_priv) {
++			BN_bin2bn(kop.crk_param[kop.crk_iparams].crp_p, (kop.crk_param[kop.crk_iparams].crp_nbits + 7)/8, priv_key);
++			if (!EC_KEY_set_private_key(eckey, priv_key)) {
++				perror("EC_KEY_set_private_key()");
++				goto err;
++			}
++		}
++
++		if ((pub_key = (EC_POINT *)EC_KEY_get0_public_key(eckey)) == NULL) {
++			pub_key = EC_POINT_new(group);
++			if (pub_key == NULL) {
++				perror("EC_POINT_new()");
++				goto err;
++			}
++			alloc_pub = 1;
++		}
++
++		if (alloc_pub) {
++			pub_key_buf_sz = ((kop.crk_param[kop.crk_iparams + 1].crp_nbits + 7)/8);
++			pub_key_buf = (unsigned char *) OPENSSL_malloc(pub_key_buf_sz + 1);
++			if (pub_key_buf == NULL) {
++				perror("OPENSSL_malloc()");
++				goto err;
++			}
++			pub_key_buf[0] = 0x04;
++			memcpy(&pub_key_buf[1],kop.crk_param[kop.crk_iparams+1].crp_p, pub_key_buf_sz );
++			EC_POINT_oct2point(group, pub_key, pub_key_buf, pub_key_buf_sz + 1,ctx);
++
++			if (!EC_KEY_set_public_key(eckey, pub_key)) {
++				perror("EC_KEY_set_public_key()");
++				goto err;
++			}
++		}
++		ret = 1;
++	}
++	/* Finish session */
++	if (ioctl(cfd, CIOCFSESSION, &sess.ses)) {
++		perror("ioctl(CIOCFSESSION)");
++	}
++	zapparams(&kop);
++err:
++	if (alloc_pub)
++	    EC_POINT_free(pub_key);
++	if (alloc_priv)
++	    BN_clear_free(priv_key);
++	if(pub_key_buf)
++	    OPENSSL_free(pub_key_buf);
++	if (ctx != NULL) {
++		BN_CTX_end(ctx);
++		BN_CTX_free(ctx);
++	}
++	return (ret);
++}
++
++static void prepare_ec_methods(void)
++{
++	devcrypto_ec = EC_KEY_METHOD_new(NULL);
++	assert (devcrypto_ec != NULL);
++
++	int (*compute_key)(unsigned char **pout, size_t *poutlen,
++                       const EC_POINT *pub_key, const EC_KEY *ecdh);
++
++	EC_KEY_METHOD_get_compute_key(EC_KEY_OpenSSL(), &compute_key);
++	EC_KEY_METHOD_set_init(devcrypto_ec, NULL, NULL, NULL, NULL, NULL, NULL);
++	EC_KEY_METHOD_set_keygen(devcrypto_ec, devcrypto_ec_keygen);
++	EC_KEY_METHOD_set_compute_key(devcrypto_ec, compute_key);
++	EC_KEY_METHOD_set_sign(devcrypto_ec, devcrypto_ec_sign,
++				devcrypto_ec_sign_setup,
++				devcrypto_ec_sign_sig);
++	EC_KEY_METHOD_set_verify(devcrypto_ec, devcrypto_ec_verify,
++				devcrypto_ec_do_verify);
++}
++
++
+ /******************************************************************************
+  *
+  * LOAD / UNLOAD
+@@ -742,6 +1269,10 @@ static int devcrypto_digests(ENGINE *e, const EVP_MD **digest,
+ 
+ static int devcrypto_unload(ENGINE *e)
+ {
++
++# ifndef OPENSSL_NO_EC
++    destroy_all_ec_methods();
++# endif
+     destroy_all_cipher_methods();
+ #ifdef IMPLEMENT_DIGEST
+     destroy_all_digest_methods();
+@@ -779,6 +1310,9 @@ void engine_load_devcrypto_int()
+         return;
+     }
+ 
++# ifndef OPENSSL_NO_EC
++    prepare_ec_methods();
++# endif
+     prepare_cipher_methods();
+ #ifdef IMPLEMENT_DIGEST
+     prepare_digest_methods();
+@@ -817,10 +1351,10 @@ void engine_load_devcrypto_int()
+ # ifndef OPENSSL_NO_DH
+         || !ENGINE_set_DH(e, devcrypto_dh)
+ # endif
++#endif
+ # ifndef OPENSSL_NO_EC
+         || !ENGINE_set_EC(e, devcrypto_ec)
+ # endif
+-#endif
+         || !ENGINE_set_ciphers(e, devcrypto_ciphers)
+ #ifdef IMPLEMENT_DIGEST
+         || !ENGINE_set_digests(e, devcrypto_digests)
+-- 
+2.20.0
+
