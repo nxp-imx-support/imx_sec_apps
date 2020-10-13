@@ -1,0 +1,70 @@
+commit fec7c9e4fb38fb2362c87f34bf32585ee78079bc
+Author: Andreea Proca <andreea-brandusa.proca@nxp.com>
+Date:   Tue Oct 13 14:57:08 2020 +0300
+
+    Add dual rootfs parition boot logic and recovery
+
+diff --git a/configs/imx8mm_ddr4_evk_defconfig b/configs/imx8mm_ddr4_evk_defconfig
+index bef944f..c84e782 100644
+--- a/configs/imx8mm_ddr4_evk_defconfig
++++ b/configs/imx8mm_ddr4_evk_defconfig
+@@ -134,3 +134,6 @@ CONFIG_DM_VIDEO=y
+ CONFIG_VIDEO_LCD_RAYDIUM_RM67191=y
+ CONFIG_VIDEO_ADV7535=y
+ CONFIG_SYS_WHITE_ON_BLACK=y
++CONFIG_BOOTCOUNT_LIMIT=y
++CONFIG_BOOTCOUNT_ENV=y
++CONFIG_SECURE_BOOT=y
+diff --git a/include/configs/imx8mm_evk.h b/include/configs/imx8mm_evk.h
+index 0f0c1b2..65034e0 100644
+--- a/include/configs/imx8mm_evk.h
++++ b/include/configs/imx8mm_evk.h
+@@ -115,27 +115,43 @@
+ #define CONFIG_EXTRA_ENV_SETTINGS		\
+ 	CONFIG_MFG_ENV_SETTINGS \
+ 	JAILHOUSE_ENV \
++	"bootlimit=4\0" \
++	"rootfspart=2\0" \
+ 	"script=boot.scr\0" \
+-	"image=Image\0" \
++	"image=boot/Image\0" \
+ 	"splashimage=0x50000000\0" \
+ 	"console=ttymxc1,115200\0" \
+ 	"fdt_addr=0x43000000\0"			\
+ 	"fdt_high=0xffffffffffffffff\0"		\
+ 	"boot_fit=no\0" \
+-	"fdt_file=" CONFIG_DEFAULT_FDT_FILE "\0" \
++	"fdt_file=boot/" CONFIG_DEFAULT_FDT_FILE "\0" \
+ 	"initrd_addr=0x43800000\0"		\
+ 	"initrd_high=0xffffffffffffffff\0" \
+ 	"mmcdev="__stringify(CONFIG_SYS_MMC_ENV_DEV)"\0" \
+ 	"mmcpart=" __stringify(CONFIG_SYS_MMC_IMG_LOAD_PART) "\0" \
+ 	"mmcroot=" CONFIG_MMCROOT " rootwait rw\0" \
+ 	"mmcautodetect=yes\0" \
+-	"mmcargs=setenv bootargs ${jh_clk} console=${console} root=${mmcroot}\0 " \
++        "mmcargs=setenv bootargs ${jh_clk} console=${console} root=${mymmcroot}\0" \
+ 	"loadbootscript=fatload mmc ${mmcdev}:${mmcpart} ${loadaddr} ${script};\0" \
+ 	"bootscript=echo Running bootscript from mmc ...; " \
+ 		"source\0" \
+-	"loadimage=fatload mmc ${mmcdev}:${mmcpart} ${loadaddr} ${image}\0" \
+-	"loadfdt=fatload mmc ${mmcdev}:${mmcpart} ${fdt_addr} ${fdt_file}\0" \
++	"loadimage=ext4load mmc ${mmcdev}:${rootfspart} ${loadaddr} ${image}\0" \
++	"loadfdt=ext4load mmc ${mmcdev}:${rootfspart} ${fdt_addr} ${fdt_file}\0" \
++	"getrootfspart=echo Check rootfspart; " \
++		"if test ${rootfspart} = 3; then " \
++			"setenv mymmcroot /dev/mmcblk1p3 rootwait rw; " \
++		"else "\
++                        "setenv mymmcroot /dev/mmcblk1p2 rootwait rw; " \
++		"fi; saveenv; \0" \
++	"altbootcmd=echo Rollback to previous RootFs; " \
++		"if test ${rootfspart} = 2; then " \
++			"setenv rootfspart 3; setenv mymmcroot /dev/mmcblk1p3 rootwait rw; " \
++		"else " \
++			"setenv rootfspart 2; setenv mymmcroot /dev/mmcblk1p2 rootwait rw; " \
++		"fi; setenv upgrade_available 0; setenv bootcount 0; saveenv; " \
++		"run bootcmd; \0" \
+ 	"mmcboot=echo Booting from mmc ...; " \
++		"run getrootfspart; " \
+ 		"run mmcargs; " \
+ 		"if test ${boot_fit} = yes || test ${boot_fit} = try; then " \
+ 			"bootm ${loadaddr}; " \

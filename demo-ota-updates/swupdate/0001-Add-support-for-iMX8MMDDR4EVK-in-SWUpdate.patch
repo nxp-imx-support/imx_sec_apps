@@ -1,0 +1,361 @@
+commit 6cea27ed7bffaa1c88babd91f8468c8d4a157af6
+Author: Andreea Proca <andreea-brandusa.proca@nxp.com>
+Date:   Tue Oct 13 15:53:21 2020 +0300
+
+    Add support for i.MX8MMDDR4EVK in swupdate
+
+diff --git a/recipes-bsp/libubootenv/files/imx8mmddr4evk/fw_env.config b/recipes-bsp/libubootenv/files/imx8mmddr4evk/fw_env.config
+new file mode 100644
+index 0000000..0b20caa
+--- /dev/null
++++ b/recipes-bsp/libubootenv/files/imx8mmddr4evk/fw_env.config
+@@ -0,0 +1 @@
++/dev/mmcblk1 0x400000 0x1000
+diff --git a/recipes-extended/images/update-image.bb b/recipes-extended/images/update-image.bb
+index 1636ba6..947eb49 100644
+--- a/recipes-extended/images/update-image.bb
++++ b/recipes-extended/images/update-image.bb
+@@ -11,9 +11,10 @@ SRC_URI = "\
+ "
+ 
+ # images to build before building swupdate image
+-IMAGE_DEPENDS = "core-image-full-cmdline"
++IMAGE_DEPENDS = "core-image-minimal"
+ 
+ # images and files that will be included in the .swu image
+-SWUPDATE_IMAGES = "core-image-full-cmdline"
++SWUPDATE_IMAGES = "core-image-minimal"
+ 
+-SWUPDATE_IMAGES_FSTYPES[core-image-full-cmdline] = ".ext4.gz"
++SWUPDATE_IMAGES_FSTYPES[core-image-minimal] = ".sdcard.bz2"
++COMPATIBLE = "imx8mmddr4evk"
+diff --git a/recipes-extended/images/update-image/imx8mmddr4evk/emmcsetup.lua b/recipes-extended/images/update-image/imx8mmddr4evk/emmcsetup.lua
+new file mode 100644
+index 0000000..58a7832
+--- /dev/null
++++ b/recipes-extended/images/update-image/imx8mmddr4evk/emmcsetup.lua
+@@ -0,0 +1,12 @@
++function preinst()
++	local out = "Post installed script called"
++
++	return true, out
++
++end
++
++function postinst()
++	local out = "Post installed script called"
++
++	return true, out
++end
+diff --git a/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-addfile b/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-addfile
+new file mode 100644
+index 0000000..72cee0b
+--- /dev/null
++++ b/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-addfile
+@@ -0,0 +1,17 @@
++software =
++{
++    version = "1.0";
++    hardware-compatibility: ["1.0"];
++        files: (
++                {
++                        filename = "testfile.txt";
++                        path = "/mnt/root/home/root/testfile.txt";
++                }
++        );
++        scripts: (
++                {
++                        filename = "update_file.sh";
++                        type = "shellscript";
++                }
++        );
++}
+diff --git a/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-rootfs b/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-rootfs
+new file mode 100644
+index 0000000..d44d82b
+--- /dev/null
++++ b/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-rootfs
+@@ -0,0 +1,48 @@
++software =
++{
++    version = "2.3.0";
++
++    imx8mmddr4evk = {
++        hardware-compatibility: [ "1.0" ];
++        rootfs1: {
++            images: (
++                {
++                    filename = "core-image-minimal-imx8mmddr4evk.ext4.gz";
++                    compressed = "zlib";
++                    installed-directly = true;
++                    device = "/dev/mmcblk1p2";
++                }
++            );
++            bootenv: (
++                {
++                    name = "rootfspart";
++                    value = "2";
++                },
++                {
++                    name = "upgrade_available";
++                    value = "1";
++                }
++            );
++        }
++        rootfs2: {
++            images: (
++                {
++                    filename = "core-image-minimal-imx8mmddr4evk.ext4.gz";
++                    compressed = "zlib";
++                    installed-directly = true;
++                    device = "/dev/mmcblk1p3";
++                }
++            );
++            bootenv: (
++                {
++                    name = "rootfspart";
++                    value = "3";
++                },
++                {
++                    name = "upgrade_available";
++                    value = "1";
++                }
++            );
++        }
++    };
++}
+diff --git a/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-uboot b/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-uboot
+new file mode 100644
+index 0000000..a8d94d9
+--- /dev/null
++++ b/recipes-extended/images/update-image/imx8mmddr4evk/sw-description-uboot
+@@ -0,0 +1,16 @@
++software =
++{
++    version = "1.0";
++        files: (
++                {
++                        filename = "flash.bin";
++                        path = "/mnt/root/home/root/flash.bin";
++                }
++        );
++        scripts: (
++                {
++                        filename = "update.sh";
++                        type = "shellscript";
++                }
++        );
++}
+diff --git a/recipes-extended/images/update-image/imx8mmddr4evk/testfile.txt b/recipes-extended/images/update-image/imx8mmddr4evk/testfile.txt
+new file mode 100644
+index 0000000..9daeafb
+--- /dev/null
++++ b/recipes-extended/images/update-image/imx8mmddr4evk/testfile.txt
+@@ -0,0 +1 @@
++test
+diff --git a/recipes-support/swupdate/swupdate/imx8mmddr4evk/09-swupdate-args b/recipes-support/swupdate/swupdate/imx8mmddr4evk/09-swupdate-args
+new file mode 100644
+index 0000000..c5d043d
+--- /dev/null
++++ b/recipes-support/swupdate/swupdate/imx8mmddr4evk/09-swupdate-args
+@@ -0,0 +1,9 @@
++rootfs=`mount | grep "on / type" | cut -d':' -f 2 | cut -d' ' -f 1`
++
++if [ $rootfs == '/dev/mmcblk1p2' ];then
++	selection="-e imx8mmddr4evk,rootfs2"
++else
++	selection="-e imx8mmddr4evk,rootfs1"
++fi
++
++SWUPDATE_ARGS="${selection} -f /etc/swupdate.cfg"
+diff --git a/recipes-support/swupdate/swupdate/imx8mmddr4evk/defconfig b/recipes-support/swupdate/swupdate/imx8mmddr4evk/defconfig
+new file mode 100644
+index 0000000..5c2e7b2
+--- /dev/null
++++ b/recipes-support/swupdate/swupdate/imx8mmddr4evk/defconfig
+@@ -0,0 +1,108 @@
++#
++# Automatically generated file; DO NOT EDIT.
++# Swupdate Configuration
++#
++CONFIG_HAVE_DOT_CONFIG=y
++
++#
++# Swupdate Settings
++#
++
++#
++# General Configuration
++#
++CONFIG_SCRIPTS=y
++CONFIG_HW_COMPATIBILITY=y
++CONFIG_HW_COMPATIBILITY_FILE="/etc/hwrevision"
++CONFIG_SW_VERSIONS_FILE="/etc/sw-versions"
++# CONFIG_MTD is not set
++CONFIG_LUA=y
++CONFIG_LUAPKG="lua"
++# CONFIG_FEATURE_SYSLOG is not set
++
++#
++# Build Options
++#
++CONFIG_CROSS_COMPILE=""
++CONFIG_SYSROOT=""
++CONFIG_EXTRA_CFLAGS=""
++CONFIG_EXTRA_LDFLAGS=""
++CONFIG_EXTRA_LDLIBS=""
++
++#
++# Debugging Options
++#
++CONFIG_DEBUG=y
++# CONFIG_WERROR is not set
++# CONFIG_NOCLEANUP is not set
++# CONFIG_BOOTLOADER is not set
++CONFIG_UBOOT=y
++# CONFIG_BOOTLOADER_NONE is not set
++# CONFIG_BOOTLOADER_GRUB is not set
++CONFIG_UBOOT_FWENV="/etc/fw_env.config"
++CONFIG_UBOOT_NEWAPI=y
++#CONFIG_UBOOT_DEFAULTENV="/etc/u-boot-initial-env"
++CONFIG_DOWNLOAD=y
++CONFIG_HASH_VERIFY=y
++# CONFIG_SIGNED_IMAGES is not set
++CONFIG_ENCRYPTED_IMAGES=y
++CONFIG_SURICATTA=y
++
++#
++# Suricatta
++#
++
++#
++# Features
++#
++CONFIG_SURICATTA_SSL=y
++# CONFIG_SURICATTA_STATE_CHOICE_NONE is not set
++CONFIG_SURICATTA_STATE_CHOICE_BOOTLOADER=y
++CONFIG_SURICATTA_STATE_BOOTLOADER="ustate"
++
++#
++# Server
++#
++CONFIG_SURICATTA_HAWKBIT=y
++# CONFIG_SURICATTA_SERVER_NONE is not set
++CONFIG_WEBSERVER=y
++
++#
++# Webserver Features
++#
++CONFIG_MONGOOSE=y
++
++#
++# Mongoose Feature
++#
++CONFIG_MONGOOSELUA=y
++# CONFIG_MONGOOSEIPV6 is not set
++CONFIG_MONGOOSESSL=y
++
++#
++# Archival Features
++#
++CONFIG_GUNZIP=y
++
++#
++# Parser Features
++#
++CONFIG_LIBCONFIG=y
++CONFIG_PARSERROOT=""
++CONFIG_JSON=y
++# CONFIG_LUAEXTERNAL is not set
++# CONFIG_SETSWDESCRIPTION is not set
++
++#
++# Image Handlers
++#
++CONFIG_RAW=y
++CONFIG_LUASCRIPTHANDLER=y
++CONFIG_SHELLSCRIPTHANDLER=y
++# CONFIG_HANDLER_IN_LUA is not set
++#CONFIG_RDIFFHANDLER=y
++CONFIG_HANDLER_IN_LUA=y
++# CONFIG_EMBEDDED_LUA_HANDLER is not set
++CONFIG_ARCHIVE=y
++# CONFIG_REMOTE_HANDLER is not set
++CONFIG_BOOTLOADERHANDLER=y
+diff --git a/recipes-support/swupdate/swupdate/imx8mmddr4evk/swupdate.cfg b/recipes-support/swupdate/swupdate/imx8mmddr4evk/swupdate.cfg
+new file mode 100644
+index 0000000..f615175
+--- /dev/null
++++ b/recipes-support/swupdate/swupdate/imx8mmddr4evk/swupdate.cfg
+@@ -0,0 +1,43 @@
++globals :
++{
++
++	verbose = true;
++	loglevel = 5;
++	syslog = true;
++	public-key-file = "test.pem";
++};
++
++download :
++{
++	retries = 3;
++	timeout = 1800;
++};
++
++suricatta :
++{
++
++	tenant		= "default";
++	id		= "imx8mmddr4evk";
++	confirm 	= 0;
++	url 		= "http://swupdateurl:8080";
++	polldelay	= 360;
++	nocheckcert	= true;
++	retry		= 4;
++	retrywait	= 200;
++	loglevel	= 10;
++	userid		= 0;
++	groupid		= 0;
++	max_artifacts	= 1;
++/*
++	cafile		= "/etc/ssl/cafile";
++	sslkey		= "/etc/ssl/sslkey";
++	sslcert		= "/etc/ssl/sslcert";
++*/
++};
++
++webserver :
++{
++	document_root = "/www";
++	userid		= 0;
++	groupid		= 0;
++};
+diff --git a/wic/imx8mmddr4evk.wks.in b/wic/imx8mmddr4evk.wks.in
+new file mode 100644
+index 0000000..87bd9e2
+--- /dev/null
++++ b/wic/imx8mmddr4evk.wks.in
+@@ -0,0 +1,22 @@
++# short-description: Create SD card image with a boot partition
++# long-description:
++# Create an image that can be written onto a SD card using dd for use
++# with i.MX SoC family
++# It uses u-boot + other binaries gathered together on imx-boot file
++#
++# The disk layout used is:
++#  - ---------- -------------- --------------
++# | | imx-boot |     boot     |    rootfs    |
++#  - ---------- -------------- --------------
++# ^ ^          ^              ^              ^
++# | |          |              |              |
++# 0 |        8MiB          72MiB          72MiB + rootfs + IMAGE_EXTRA_SPACE (default 10MiB)
++#   ${IMX_BOOT_SEEK} 32 or 33kiB, see reference manual
++#
++part u-boot --source rawcopy --sourceparams="file=imx-boot" --ondisk mmcblk --no-table --align ${IMX_BOOT_SEEK}
++part / --source rootfs --ondisk mmcblk --fstype=ext4 --label root --align 8192
++part /mnt --source rootfs --ondisk mmcblk --fstype=ext4 --label rootfs-bkup --align 8192
++part /data --ondisk mmcblk --fstype=ext4 --label data --align 4096 --size 1024M
++
++bootloader --ptable msdos
++
