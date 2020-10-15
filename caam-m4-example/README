@@ -1,0 +1,1 @@
+This is an example of how to implement and run an M4 application that, for a given input, generates a SHA256 digest using CAAM. The example was tested on an iMX8QXP C0 on both M4 TCM and DDR.
