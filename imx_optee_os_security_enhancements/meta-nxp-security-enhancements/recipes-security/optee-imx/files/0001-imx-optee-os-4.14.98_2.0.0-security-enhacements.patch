@@ -1,7 +1,7 @@
 From 51bbfa769ebc8bc00e2a264500fd0983bb130f3b Mon Sep 17 00:00:00 2001
 From: Marouene Boubakri <marouene.boubakri@nxp.com>
 Date: Thu, 30 Jan 2020 16:50:29 +0100
-Subject: [PATCH 01/22] optee-os-imx: enable caam black key, blob, mp and ocotp
+Subject: [PATCH 01/24] optee-os-imx: enable caam black key, blob, mp and ocotp
  features
 
 %% original patch: 0001-optee-os-imx-enable-caam-black-key-blob-mp-and-ocotp.patch
@@ -3722,7 +3722,7 @@ index 00000000..7ed86b9f
 From e7862218eb3e6e7c14556957198493336e38daec Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Tue, 4 Aug 2020 11:36:27 +0200
-Subject: [PATCH 02/22] Restore RSA CAAM fonctionnalities with plain text keys
+Subject: [PATCH 02/24] Restore RSA CAAM fonctionnalities with plain text keys
 
 Restore RSA operations in the CAAM driver with non-encrypted keys.
 
@@ -3787,7 +3787,7 @@ index bb6b31c3..9f84d960 100644
 From 8383fb9324db78e5d138df119bedebbb35b6ca5f Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Mon, 27 Jul 2020 14:29:44 +0200
-Subject: [PATCH 03/22] TEE-575 imx: add imx_soc_digprog() function
+Subject: [PATCH 03/24] TEE-575 imx: add imx_soc_digprog() function
 
 imx_soc_digprog(). This function returns a 32bits digprog register value.
 
@@ -3867,7 +3867,7 @@ index af7cb99a..9e5338d9 100644
 From ab0e5a1b482532efca32b2c4c3ff6929843e692b Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Mon, 27 Jul 2020 14:33:38 +0200
-Subject: [PATCH 04/22] TEE-575 imx: pta: add PTA soc_info
+Subject: [PATCH 04/24] TEE-575 imx: pta: add PTA soc_info
 
 This PTA exposes soc related information to TAs.
 this first commit exposes digprog register.
@@ -4006,7 +4006,7 @@ index fc415a2d..626276b6 100644
 From 47bcad7478a9578303e163fb833f4752bc772662 Mon Sep 17 00:00:00 2001
 From: Silvano di Ninno <silvano.dininno@nxp.com>
 Date: Mon, 3 Aug 2020 16:42:59 +0200
-Subject: [PATCH 05/22] libutil: io_clrsetbitsX() firends for 8bit and 16bit
+Subject: [PATCH 05/24] libutil: io_clrsetbitsX() firends for 8bit and 16bit
  accesses
 
     Introduce io_setbits8(), io_clrbits8(), io_clrsetbits8() and
@@ -4096,7 +4096,7 @@ index 8e81f429..b7aaa028 100644
 From d6a510e987813476ba42d38f9cd977c5b1f9d783 Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Tue, 21 Jul 2020 11:30:14 +0200
-Subject: [PATCH 06/22] TEE-571 imx: add CRM registers for imx8m platforms
+Subject: [PATCH 06/24] TEE-571 imx: add CRM registers for imx8m platforms
 
 Add CRM registers.
 
@@ -4182,7 +4182,7 @@ index 8f75cd3b..fd485d11 100644
 From 31256d3847d56e25482932e963acb56bbc8011f6 Mon Sep 17 00:00:00 2001
 From: Silvano di Ninno <silvano.dininno@nxp.com>
 Date: Mon, 3 Aug 2020 16:38:19 +0200
-Subject: [PATCH 07/22] TEE-571 arm:imx: update OCOTP driver
+Subject: [PATCH 07/24] TEE-571 arm:imx: update OCOTP driver
 
 Add OCOTP driver for imx8mm platform.
 Implement the read of shadow registers only, no write.
@@ -4373,7 +4373,7 @@ index 00000000..e5f34c17
 From 2042a9356f08452e1835eaa860d5d63f029ba258 Mon Sep 17 00:00:00 2001
 From: Silvano di Ninno <silvano.dininno@nxp.com>
 Date: Mon, 3 Aug 2020 17:20:26 +0200
-Subject: [PATCH 08/22] TEE-571 imx: pta: update OCOTP PTA
+Subject: [PATCH 08/24] TEE-571 imx: pta: update OCOTP PTA
 
 Expose OCOTP driver functions.
 Implement fuse read.
@@ -4465,7 +4465,7 @@ index 7ed86b9f..10b118ec 100644
 From bfd72c2a9cd549850178eb46db1b42b6bedb84c0 Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Fri, 7 Aug 2020 14:48:16 +0200
-Subject: [PATCH 09/22] Add imxcrypt_key object in the crypto API
+Subject: [PATCH 09/24] Add imxcrypt_key object in the crypto API
 
 This object is needed for future black key support in CAAM driver.
 imxcrypt_key is wrapper around imxcryptbuf with a field to specify the
@@ -4612,7 +4612,7 @@ index 90e51438..8afb309d 100644
 From b9de88fde23ec4ad638becdf81df66f48d45aead Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Fri, 7 Aug 2020 14:48:06 +0200
-Subject: [PATCH 10/22] Add black key support to CAAM cipher
+Subject: [PATCH 10/24] Add black key support to CAAM cipher
 
 Modify the KEY command to support the loading of black key encrypted
 with AES-ECB/CCM.
@@ -4899,7 +4899,7 @@ index 2406400b..dafbdd98 100644
 From 34010ff3fe87ee186f9ca4c583dc62efb64f9970 Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Tue, 4 Aug 2020 16:12:14 +0200
-Subject: [PATCH 11/22] Add Cipher PTA with black key support
+Subject: [PATCH 11/24] Add Cipher PTA with black key support
 
 Add the Cipher PTA with black key support.
 Implemented Cipher operations:
@@ -5228,7 +5228,7 @@ index bebf283e..1c19ba08 100644
 From e4c8f0294c34720c78bfd8deeae1974002143adc Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Fri, 7 Aug 2020 15:01:27 +0200
-Subject: [PATCH 12/22] Add black key support to CAAM Hash
+Subject: [PATCH 12/24] Add black key support to CAAM Hash
 
 Change the hardware key split to support black key as input key.
 Modify the KEY command to support the loading of black key encrypted
@@ -5387,7 +5387,7 @@ index a06f1db2..e4247338 100644
 From 478f52aa6a30f04a78558fe8019cf6a739d91673 Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Tue, 4 Aug 2020 17:07:47 +0200
-Subject: [PATCH 13/22] Add HMAC PTA with black key support
+Subject: [PATCH 13/24] Add HMAC PTA with black key support
 
 Add HMAC PTA with black key support
 Implemented HMAC operations:
@@ -5715,7 +5715,7 @@ index 1c19ba08..7e02fe04 100644
 From 68bea4135842dcda37985b89e3457580f7a92840 Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Wed, 5 Aug 2020 17:40:35 +0200
-Subject: [PATCH 14/22] Add CIPHER black key encapsulation descriptor
+Subject: [PATCH 14/24] Add CIPHER black key encapsulation descriptor
 
 Add descriptor builder for Cipher black key encapsulation.
 Add support for AES-ECB/CCM encapsulation.
@@ -5797,7 +5797,7 @@ index 6668aaa3..8c22e3e3 100644
 From dc50c4d196b2b7adc7a77fafb26a14620eb87404 Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Fri, 7 Aug 2020 15:07:29 +0200
-Subject: [PATCH 15/22] Change black key PTA command IDs
+Subject: [PATCH 15/24] Change black key PTA command IDs
 
 Change from enum to defines for better readability.
 
@@ -5852,7 +5852,7 @@ index 7e02fe04..738861f4 100644
 From c9add6e893b465275e56ad26ae7ae01bdf76df2d Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Fri, 7 Aug 2020 16:09:42 +0200
-Subject: [PATCH 16/22] Restore origin commands IDs for BK PTA
+Subject: [PATCH 16/24] Restore origin commands IDs for BK PTA
 
 The first commands must start from 1 and not 0 for retro compatibility
 with previous TA implementation.
@@ -5906,7 +5906,7 @@ index 738861f4..ed67693d 100644
 From 370523d121aa025652736e29f612cb6c344f9d23 Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Mon, 17 Aug 2020 16:55:32 +0200
-Subject: [PATCH 17/22] Add the plain key size for blob encapsulation
+Subject: [PATCH 17/24] Add the plain key size for blob encapsulation
 
 Add the plain key size as parameter for the blob encapsulation
 to ensure enough space is allocated for the blob.
@@ -6007,7 +6007,7 @@ index ab348e57..9953def8 100644
 From 7cdafd128fcb40ae5cef8e0ff5baa121fa5d392c Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Mon, 17 Aug 2020 16:56:34 +0200
-Subject: [PATCH 18/22] Add AUX parameter for FIFO_STORE command
+Subject: [PATCH 18/24] Add AUX parameter for FIFO_STORE command
 
 Add the auxiliary control bits for the FIFO_STORE command in the CAAM blob
 encapsulation.
@@ -6040,7 +6040,7 @@ index 8c22e3e3..cb225eee 100644
 From 3f77081cb7ab1ddd2c20e023372d6e537fe774bc Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Tue, 18 Aug 2020 10:07:38 +0200
-Subject: [PATCH 19/22] Rework the CAAM blob operation function
+Subject: [PATCH 19/24] Rework the CAAM blob operation function
 
 Simplify the blob encapsulation/decapsulations switch case.
 Fix the return value of caam_realloc_align().
@@ -6260,7 +6260,7 @@ index e8450fdd..483861c9 100644
 From 6fcd7f8123ba3486fc1b92891548057462a76221 Mon Sep 17 00:00:00 2001
 From: Franck LENORMAND <franck.lenormand@nxp.com>
 Date: Wed, 9 Sep 2020 16:26:51 +0200
-Subject: [PATCH 20/22] Fix do_update_cipher shifting offset
+Subject: [PATCH 20/24] Fix do_update_cipher shifting offset
 
 In do_update_cipher the offset is added to the data pointer but
 also increased each time creating a shift at each iteration of
@@ -6308,7 +6308,7 @@ index 743c26ba..ef635784 100644
 From bc501e925045025ebcf86d8ae7f298e5e9972ccb Mon Sep 17 00:00:00 2001
 From: Cedric Neveux <cedric.neveux@nxp.com>
 Date: Fri, 5 Jul 2019 08:19:11 +0200
-Subject: [PATCH 21/22] TEE-422 HAB failure event (open mode)
+Subject: [PATCH 21/24] TEE-422 HAB failure event (open mode)
 
   Removed the selection of the JR Index in the hal_cfg.c file
   when CFG_WITH_HAB enabled.
@@ -6544,7 +6544,7 @@ index 7e62f693..a36d43ee 100644
 From feacf06edb47c311b470292ae1f266401bf78c4f Mon Sep 17 00:00:00 2001
 From: Clement Faure <clement.faure@nxp.com>
 Date: Tue, 13 Oct 2020 17:24:34 +0200
-Subject: [PATCH 22/22] Remove CAAM blob dump debug traces
+Subject: [PATCH 22/24] Remove CAAM blob dump debug traces
 
 Over security concerns, debug traces that would eventually dump
 sensitive data such as keys and blobs are removed.
@@ -6585,6 +6585,68 @@ index 483861c9..9a3fa3f0 100644
  		if (retS == 1) {
  			/*
  			 * Copy the result data in the correct output
+-- 
+2.25.1
+
+
+From 9a7dc3200a745014bed351c9ca6e3f360eb5831a Mon Sep 17 00:00:00 2001
+From: Clement Faure <clement.faure@nxp.com>
+Date: Mon, 2 Nov 2020 17:01:04 +0100
+Subject: [PATCH 23/24] TEE-620 Align black key types between crypto api and
+ PTA
+
+Align enum key types between the crypto API and black key PTA:
+The enum should start as the following:
+ * RED_KEY = 0
+ * BLACK_KEY_ECB = 1
+ * BLACK_KEY_CCM = 2
+
+Signed-off-by: Clement Faure <clement.faure@nxp.com>
+---
+ lib/libutee/include/pta_bk.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/lib/libutee/include/pta_bk.h b/lib/libutee/include/pta_bk.h
+index ed67693d..18b359ab 100644
+--- a/lib/libutee/include/pta_bk.h
++++ b/lib/libutee/include/pta_bk.h
+@@ -42,6 +42,7 @@
+  *          crypto_extension.h
+  */
+ enum PTA_BK_TYPE {
++	PTA_PT,     ///< Red key mode - plain text key
+ 	PTA_BK_ECB, ///< Black key mode - key encrypted in AES ECB
+ 	PTA_BK_CCM, ///< Black key mode - key encrypted in AES CCM
+ };
+-- 
+2.25.1
+
+
+From b1db0f9980cf99cb5c1fbf9971d2c78a7aa3acce Mon Sep 17 00:00:00 2001
+From: Clement Faure <clement.faure@nxp.com>
+Date: Mon, 2 Nov 2020 17:27:53 +0100
+Subject: [PATCH 24/24] Remove debug trace in cipher_init()
+
+Remove irrelevant debug trace.
+
+Signed-off-by: Clement Faure <clement.faure@nxp.com>
+---
+ core/arch/arm/plat-imx/pta/pta_bk_mx.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/pta/pta_bk_mx.c b/core/arch/arm/plat-imx/pta/pta_bk_mx.c
+index a5592b84..4a85d114 100644
+--- a/core/arch/arm/plat-imx/pta/pta_bk_mx.c
++++ b/core/arch/arm/plat-imx/pta/pta_bk_mx.c
+@@ -348,8 +348,6 @@ static TEE_Result cipher_init(uint32_t param_types,
+ 		return TEE_ERROR_ITEM_NOT_FOUND;
+ 	}
+ 
+-	EMSG("CIPHER INIT");
+-
+ 	return ops->init(&dinit);
+ }
+ 
 -- 
 2.25.1
 
