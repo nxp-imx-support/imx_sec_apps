@@ -156,14 +156,13 @@ int main(int argc, char *argv[])
         printf("she_close_session\n");
 
 exit:
-        seco_nvm_close_session();
-        printf("Closed nvm session\n");
-
         if (nvm_status != NVM_STATUS_STOPPED) {
             if (pthread_cancel(tid) != 0) {
                 printf("failed to kill nvm storage thread\n");
             }
         }
+        seco_nvm_close_session();
+        printf("Closed nvm session\n");
 
     } while (0);
     return 0;
