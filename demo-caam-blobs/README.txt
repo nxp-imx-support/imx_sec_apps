@@ -1,4 +1,4 @@
-﻿1. Demo application to generate red/black blobs using CAAM and to encrypt/decrypt data
+1. Demo application to generate red/black blobs using CAAM and to encrypt/decrypt data
 
 This document provides a step-by-step procedure on how to generate both red and black
 key blobs and to use them to encrypt and decrypt data.
@@ -13,15 +13,14 @@ note AN12554[1].
 - The kernel patch and the source code of the demo application can be downloaded by cloning this
   bitbucket repo, branch master:
 
-  $ git clone ssh://git@bitbucket.sw.nxp.com/imxs/imx_sec_apps.git
+  $ git clone https://source.codeaurora.org/external/imxsupport/imx_sec_apps
 
 - Download the kernel sources via Yocto:
 
-  $ repo init -u git://source.codeaurora.org/external/imx/fsl-arm-yocto-bsp.git -b nxp/imx-thud -m imx-4.19.35-1.0.0.xml
-  $ repo sync -j8
-  $. ./setup-environment imx8mm
-  $ MACHINE=imx8mmevk DISTRO=fsl-imx-xwayland source ./fsl-setup-release.sh -b imx8mmevk
-  $ bitbake virtual/kernel -f -c unpack
+  $ repo init -u https://source.codeaurora.org/external/imx/imx-manifest  -b imx-linux-zeus -m imx-5.4.47-2.2.0.xml
+  $ repo sync
+  $ MACHINE=imx8mmevk DISTRO=fsl-imx-xwayland source ./imx-setup-release.sh -b build
+  $ bitbake linux-imx -f -c unpack
 
 1.2 Patch the kernel
 ---------------------
@@ -31,29 +30,29 @@ blobs using CAAM and for encrypting/decrypting data using them.
 
 - Apply the patch:
 
-  $ cd tmp/work/imx8mmevk-poky-linux/linux-imx/4.19.35-r0/git
-  //copy micro/key_blob/kernel/0001-Added-the-support-for-i.MX8-8X-in-sync-with-Linux-4.patch here
-  $ git apply 0001-Added-the-support-for-i.MX8-8X-in-sync-with-Linux-4.patch
+  $ cd tmp/work/imx8mmevk-poky-linux/linux-imx/5.4-r0/git/
+  $ git apply 0001-support-for-iMX8-8X-in-sync-with-Linux-5.4.47-2.2.0.patch
 
-- Enable the module into virtual/kernel:
+- Enable the module:
 
-  //add in arch/arm64/configs/defconfig next line
+  -- Add in arch/arm64/configs/defconfig next line
   CONFIG_CRYPTO_DEV_FSL_CAAM_SM_KEY_BLOB=y
 
 - Enable kernel-level keystore API:
 
-  //add in drivers/crypto/caam/Kconfig next lines
-  config CRYPTO_DEV_FSL_CAAM_SM_KEY_BLOB
-       bool "CAAM Secure Memory Key Blob Generation"
-       depends on CRYPTO_DEV_FSL_CAAM_SM
-       default n
-       help
-         Enables use of a prototype kernel-level Keystore API with CAAM
-         Secure Memory for key blob generation.
+  -- Add in drivers/crypto/caam/Kconfig next lines:
+  
+config CRYPTO_DEV_FSL_CAAM_SM_KEY_BLOB
+   bool "CAAM Secure Memory Key Blob Generation"
+   depends on CRYPTO_DEV_FSL_CAAM_SM
+   default n
+   help
+	 Enables use of a prototype kernel-level Keystore API with CAAM
+	 Secure Memory for key blob generation.
 
-  //set “default 9” in drivers/crypto/caam/Kconfig for config CRYPTO_DEV_FSL_CAAM_SM_SLOTSIZE
+  -- Set “default 9” in drivers/crypto/caam/Kconfig for config CRYPTO_DEV_FSL_CAAM_SM_SLOTSIZE
 
-  //add in drivers/crypto/caam/Makefile next line
+  -- Add in drivers/crypto/caam/Makefile next line
   obj-$(CONFIG_CRYPTO_DEV_FSL_CAAM_SM_KEY_BLOB) += key_blob.o
 
 1.3 Build the kernel
@@ -63,9 +62,9 @@ Build a bootable image that includes the patched Linux kernel.
 
 - Compile Linux Kernel:
 
-  $ bitbake virtual/kernel -f -c compile
+  $ bitbake linux-imx -f -c compile
 
-- Build a bootable .sdcard image:
+- Build a bootable .wic image:
 
   $ bitbake -f fsl-image-gui
   //or
@@ -75,13 +74,7 @@ Build a bootable image that includes the patched Linux kernel.
 -----------------------
 
 Build a toolchain in order to cross compile the sources of the kb_test application.
-
-- Build a toolchain from the Yocto build directory:
-
-  $ bitbake fsl-image-gui -c populate_sdk
-  $ cd tmp/deploy/sdk
-  $ ./fsl-imx-xwayland-glibc-x86_64-fsl-image-gui-aarch64-toolchain-4.19-thud.sh
-  //choose a install directory. For example /work/fsl-toolchain-4.19-thud
+For details refer to i.MX Yocto Project User's Guide from https://www.nxp.com/
 
 1.5 Cross compile the user space sources
 -----------------------------------------
@@ -90,7 +83,7 @@ Setup the environment for cross compilation using the toolchain previously prepa
 
 - From the toolchain install folder set up the environment:
 
-  $ ./environment-setup-aarch64-poky-linux
+   $ ./environment-setup-aarch64-poky-linux
 
 - Build the kb_test user space application, go to source folder and run:
 
@@ -160,7 +153,8 @@ Next is exemplified how a file can be encrypted using a black key blob.
   $ wc -c keyfile
   17 keyfile
 
-- The size of the keyfile is not a multiple of 16. Adjust the file size to 32:
+- (Optional) The size of the keyfile is not a multiple of 16. The kb_test application will automatically adjust
+   the keyfile size or adjust the file size to 32 manually:
 
   $ objcopy -I binary -O binary --pad-to 0x20 --gap-fill=0x0 keyfile keyfilewithpad
 
@@ -173,7 +167,7 @@ Next is exemplified how a file can be encrypted using a black key blob.
   $ wc -c src
   1000 src
 
-- The size of the src is not a multiple of 16. Adjust the file size to 1008:
+- (Optional) The size of the src is not a multiple of 16. Adjust the file size to 1008:
 
   $ objcopy -I binary -O binary --pad-to 0x3f0 --gap-fill=0x0 src srcpad
 
@@ -195,4 +189,4 @@ Next is exemplified how a file can be encrypted using a black key blob.
   $ ./kb_test decap black blobfile blackkey
 
 References:
-[1] AN12554: "Demo application to generate red/black blobs using CAAM and to encrypt/decrypt data"
+[1] https://www.nxp.com/docs/en/application-note/AN12554.pdf
