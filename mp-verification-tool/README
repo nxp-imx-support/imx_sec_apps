@@ -1,0 +1,21 @@
+Manufacturing Protection Signature Utility
+
+Description:
+------------
+This utility verifies the signature generated on a target board.
+The signature is specific to each board, since each has its own
+pair of private an public key. This utility verfies the signature
+with the public key.
+
+Build instructions:
+-------------------
+gcc -L/usr/lib -lssl -lcrypto -o verify main.c
+
+Usage:
+------
+./verify -m 7A5D4dA3 \
+         -k 040139C932F04525D083E15E3236DD1DCA625B2D0B14C13BA7FAA9C50C16619CE0F4C207AA609E4AAE586DF7FEE72F829F3B59CBF49F8F34C34ECA39EBD58E73CE \
+         -c E85E34E4BF56CAA32DA858C0279C50A7E64E1136A23E51BF7C04CDA56389EE56 \
+         -d 4A3C7A3725E1F7DDE41396393C88136B019633ED7BB33B689B78B25E06D42538
+
+More information can be found on www.nxp.com - AN13222.
