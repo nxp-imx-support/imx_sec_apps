@@ -18,7 +18,7 @@
 #include <sys/socket.h>
 #include <linux/if_alg.h>
 #include <linux/socket.h>
-#include "app.h"
+#include "caam-decrypt.h"
 
 /**
  * print_help - print application help
@@ -28,7 +28,7 @@ void print_help(char *app)
 	printf("Application usage: %s [options]\n", app);
 	printf("Options:\n");
 	printf("        <blob_name> <enc_algo> <input_file> <output_file>\n");
-	printf("        <blob_name> the absolute path of the file that contains the ddek_black_blob\n");
+	printf("        <blob_name> the absolute path of the file that contains the black blob\n");
 	printf("        <enc_algo> can be AES-256-CBC\n");
 	printf("        <input_file> the absolute path of the file that contains input data\n"
 		"                     initialization vector(iv) of 16 bytes prepended\n"

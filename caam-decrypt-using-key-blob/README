@@ -1,44 +1,41 @@
-Arm cross compiler toolchain(any other compatible toolchain can work):
-----------------------------------------------------------------------
+# 1. Overview
+This document explains how to use key provisioning command to generate black blob and store it in a file.
+
+# 2. Prerequisites
+- Secure mode on closed chip required.
+- CSF unlocks access to MPPUBK (customer secret).
+
+# 3. Build Uboot
+build the uboot from here:https://source.codeaurora.org/external/imx/uboot-imx/commit/?h=rel_imx_5.4.70_2.3.0 .
+- Tag: rel_imx_5.4.70_2.3.0
+- Apply Uboot-key-provision-command.patch
+
+## 3.1 Build Arm cross compiler toolchain(any other compatible toolchain can work)
+
+```
 $ wget https://developer.arm.com/-/media/Files/downloads/gnu-a/8.2-2019.01/gcc-arm-8.2-2019.01-x86_64-aarch64-elf.tar.xz
 $ tar xf gcc-arm-8.2-2019.01-x86_64-aarch64-elf.tar.xz
+```
 
+## 3.2 Cross compile uboot-imx
 
-For Uboot, Clone repo from here:
---------------------------------
-https://source.codeaurora.org/external/imx/uboot-imx/commit/?h=rel_imx_5.4.70_2.3.0
-Tag: rel_imx_5.4.70_2.3.0
-Apply Uboot-key-provision-command.patch
+- From the toolchain folder set up the environment:
 
-
-Build uboot-imx:
-----------------
+```
 $ export CROSS_COMPILE=<path to toolchain>/bin/aarch64-linux-gnu-
+```
+- Go to uboot-imx source folder and run:
+
+```
 $ make distclean
 $ make imx8mm_evk_defconfig or make imx8mn_evk_defconfig
 $ make
+```
 
+# 4. Usage
 
-Running uboot generic key provisioning command:
------------------------------------------------
-Steps to generate ddek black blob at uboot shell.
-	1. Download Encrypted DDEK
-	   u-boot=> mw.b ${initrd_addr} 0 0x20
-	   u-boot=> tftp ${initrd_addr} enc_ddek.bin
-	   Note:
-		a) Ddek must have been encrypted using PKEK = SHA256(MPPUBK).
-		b) Encryption algo for generating  Encrypted ddek must be AES-256-ECB.
-		c) Length of enc_ddek.bin must be 32 byte.
-	2. Decrypt encrypted ddek and create ddek black blob.
-	   u-boot=> mw.b ${loadaddr} 0 0x70
-	   u-boot=> export_ddek_blob ${initrd_addr} ${loadaddr}
-	   Note: loadaddr will have the 112(0x70) byte long black blob.
-	3. Write DDEK black blob into file system
-	   u-boot=> fatwrite mmc ${mmcdev}:${mmcpart} ${loadaddr} ddek_black_blob.bin 0x70
-
-
+```
 u-boot=> export_ddek_blob help
-------------------------------
 export_ddek_blob - Provision encrypted ddek as ddek black blob.
 
 Usage:
@@ -48,77 +45,27 @@ export_ddek_blob src_addr dst_addr
              must be 64 byte aligned.
  - dst_addr: destination addr which will have ddek black blob(112 byte).
              must be 64 byte aligned.
+```
 
+# 5. Run uboot generic key provisioning command
 
-For Linux, Clone repo from here:
---------------------------------
-https://source.codeaurora.org/external/imx/linux-imx/commit/?h=rel_imx_5.4.70_2.3.0
-Tag: rel_imx_5.4.70_2.3.0
+- Steps to generate black blob at uboot shell
 
+```
+1. Download Encrypted Key
+   u-boot=> mw.b ${initrd_addr} 0 0x20
+   u-boot=> tftp ${initrd_addr} enc_key.bin
+   Note:
+	a) key must have been encrypted using PKEK = SHA256(MPPUBK).
+	b) Encryption algo for generating Encrypted key must be AES-256-ECB.
+	c) Length of enc_key.bin must be 32 byte.
+2. Decrypt encrypted key and create black blob.
+   u-boot=> mw.b ${loadaddr} 0 0x70
+   u-boot=> export_ddek_blob ${initrd_addr} ${loadaddr}
+   Note: loadaddr will have the 112(0x70) byte long black blob.
+3. Write black blob into file system
+   u-boot=> fatwrite mmc ${mmcdev}:${mmcpart} ${loadaddr} black_blob.bin 0x70
+```
 
-Build Linux:
-------------
-Enable below CONFIG in linux-imx/arch/arm64/configs/imx_v8_defconfig.
-CONFIG_CRYPTO_USER_API
-CONFIG_CRYPTO_USER_API_HASH
-CONFIG_CRYPTO_USER_API_SKCIPHER
-CONFIG_CRYPTO_USER_API_RNG
-CONFIG_CRYPTO_USER_API_AEAD
-
-$ export CROSS_COMPILE=<path to toolchain>/bin/aarch64-linux-gnu-
-$ export ARCH=arm64
-$ make distclean
-$ make imx_v8_defconfig
-$ make -j32
-$ make modules_install INSTALL_MOD_PATH=<path where to install>
-
-
-Build Generic Linux user space Application:
--------------------------------------------
-$ cd crypto_af_alg
-$ export CC=${CROSS_COMPILE}gcc
-$ export LD=${CROSS_COMPILE}ld
-$ export KERNEL_DIR=<path to linux-imx>/kernel
-$ export KERNEL_SRC=<path to linux-imx>/kernel
-$ make
-
-
-Running caam-decrypt application on iMX8MM/MN:
-----------------------------------------------
-Prerequisites:
-caam-decrypt application make use of caam-keygen application
-to import black key from ddek black blob.
-Make sure that caam-keygen app is already present at /usr/bin
-
-Steps to run caam-decrypt application on linux
-	1. Boot kernel on target board
-	2. Mount mmc device to get the ddek black blob
-	   $ mkdir /media/boot
-	   $ mount /dev/mmcblk1p1 /media/boot
-	3. Copy  caam-decrypt and encrypted file on board.
-	4. Run caam-decrypt
-	   $ ./caam-decrypt /media/boot/ddek_black_blob.bin AES-256-CBC enc_file lk.bin
-	   Note:
-	   a) AES-256-CBC is the only supported encryption algorithm.
-	   b) enc_file is generated by encrypting data using data encryption key.
-	      Where first 16 bytes represents the IV and remaining is encrypted data.
-	      File size must be multiple of 16 else AES data size error will come.
-
-	      AES Encrypted file format
-	      16 Octets - Initialization Vector (IV) is an input to encryption algorithm.
-	      nn Octets - Encrypted message  (for AES-256-CBC, it must be multiple of 16)
-
-	   c) lk.bin is decrypted data generated as a result of AES crypto operation.
-
-
-root@imx8mmevk:~# caam-decrypt help
------------------------------------
-Application usage: caam-decrypt [options]
-Options:
-        <blob_name> <enc_algo> <input_file> <output_file>
-        <blob_name> the absolute path of the file that contains the ddek_black_blob
-        <enc_algo> can be AES-256-CBC
-        <input_file> the absolute path of the file that contains input data
-                     initialization vector(iv) of 16 bytes prepended
-                     size of input file must be multiple of 16
-        <output_file> the absolute path of the file that contains output data
+# 6. Build and understand the usage of caam-decrypt application
+Follow README of crypto_af_alg.
