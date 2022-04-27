@@ -1,0 +1,28 @@
+NXP Software Content Register
+
+Release: NXP OPTEE OS Security Enhancements
+Date: April 2022
+Outgoing License: MIT, BSD 2-Clause
+License in File: LICENSE
+
+--------------------------------------------
+
+Package:                   NXP OPTEE OS Security Enhancements Yocto Project Meta Layer
+Outgoing License:          MIT
+License File:              meta-nxp-security-enhancements/License.txt
+Package Category:          Software build scripts
+Type of content:           Bitbake recipes
+Description and comments:  Yocto Project meta layer used to integrate into the i.MX BSP
+Release Location:          https://source.codeaurora.org/external/imxsupport/imx_sec_apps/tree/imx_optee_os_security_enhancements/meta-nxp-security-enhancements/recipes-security/optee-imx
+Origin:                    NXP (MIT)
+
+--------------------------------------------
+
+Package:                   NXP OPTEE OS Security Enhancements Patch
+Outgoing License:          BSD-2-Clause
+License File:              meta-nxp-security-enhancements/License.txt
+Package Category:          Patch file
+Type of content:           Source code patch
+Description and comments:  OPTEE OS Security Enhancements Patch
+Release Location:          https://source.codeaurora.org/external/imxsupport/imx_sec_apps/tree/imx_optee_os_security_enhancements/meta-nxp-security-enhancements/recipes-security/optee-imx/files
+Origin:                    NXP (BSD-2-Clause)

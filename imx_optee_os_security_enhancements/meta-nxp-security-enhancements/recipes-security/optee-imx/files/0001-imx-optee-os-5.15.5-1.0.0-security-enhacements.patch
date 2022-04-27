@@ -1,0 +1,5089 @@
+From b3d3a23c26aa1aba7a7bcf82bff678150b80ffaf Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Wed, 1 Sep 2021 14:51:19 +0200
+Subject: [PATCH 1/8] LFOPTEE-63 core: driver: crypto: Add support of black
+ keys
+
+This patch is adding support for black keys to different components:
+ - cipher
+ - RSA
+ - MAC: CMAC / HMAC
+Structure to hold the key details are modified as we function building the
+descriptor needs to know the type of key PLAIN_TEXT/ BK_ECB / BK_CCM along
+with the size of the original key.
+
+Signed-off-by: Marouene Boubakri <marouene.boubakri@nxp.com>
+Signed-off-by: Clement Faure <clement.faure@nxp.com>
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk         |   4 +-
+ core/arch/arm/plat-imx/pta/pta_dek_blob.c     |   2 +-
+ core/arch/arm/plat-ls/conf.mk                 |   1 +
+ core/crypto/cbc-mac.c                         |   5 +-
+ core/crypto/crypto.c                          |   4 +-
+ core/crypto/sm3-hmac.c                        |   5 +-
+ core/drivers/crypto/caam/acipher/caam_rsa.c   |  60 +++++++++--
+ core/drivers/crypto/caam/blob/caam_blob_sm.c  |  10 +-
+ core/drivers/crypto/caam/caam_desc.c          |  30 ++++++
+ core/drivers/crypto/caam/cipher/caam_cipher.c | 101 +++++++++---------
+ .../crypto/caam/cipher/caam_cipher_mac.c      |  25 +++--
+ core/drivers/crypto/caam/cipher/local.h       |   4 +-
+ core/drivers/crypto/caam/hash/caam_hash.c     |  43 +++++---
+ core/drivers/crypto/caam/hash/caam_hash_mac.c |  80 ++++++++++----
+ core/drivers/crypto/caam/hash/local.h         |   3 +-
+ .../crypto/caam/include/caam_desc_defines.h   |  17 ++-
+ .../crypto/caam/include/caam_desc_helper.h    |  13 +++
+ core/drivers/crypto/caam/include/caam_types.h |   8 ++
+ .../drivers/crypto/crypto_api/cipher/cipher.c |  16 +--
+ .../crypto/crypto_api/include/drvcrypt.h      |  20 +++-
+ .../crypto_api/include/drvcrypt_acipher.h     |   7 ++
+ .../crypto_api/include/drvcrypt_cipher.h      |   7 +-
+ core/drivers/crypto/sub.mk                    |   2 +-
+ core/include/crypto/crypto_impl.h             |   4 +-
+ core/include/drivers/caam/crypto_extension.h  |  48 +++++++--
+ core/lib/libtomcrypt/cmac.c                   |   4 +-
+ core/lib/libtomcrypt/hmac.c                   |   4 +-
+ 27 files changed, 378 insertions(+), 149 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index eb641972..bbb139c9 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -26,7 +26,6 @@
+ # DBG_DSA    BIT32(14) // DSA trace
+ # DBG_MP     BIT32(15) // MP trace
+ # DBG_SM     BIT32(16) // SM trace
+-
+ CFG_DBG_CAAM_TRACE ?= 0x2
+ CFG_DBG_CAAM_DESC ?= 0x0
+ CFG_DBG_CAAM_BUF ?= 0x0
+@@ -104,13 +103,14 @@ endif
+ #
+ # Configuration of the Crypto Driver
+ #
+-ifeq ($(CFG_CRYPTO_DRIVER), y)
+ 
+ # Crypto Driver Debug
+ # DRV_DBG_TRACE BIT32(0) // Driver trace
+ # DRV_DBG_BUF   BIT32(1) // Driver dump Buffer
+ CFG_CRYPTO_DRIVER_DEBUG ?= 0
+ 
++ifeq ($(CFG_CRYPTO_DRIVER), y)
++
+ $(call force, CFG_NXP_CAAM_RUNTIME_JR, y)
+ 
+ #
+diff --git a/core/arch/arm/plat-imx/pta/pta_dek_blob.c b/core/arch/arm/plat-imx/pta/pta_dek_blob.c
+index 11f41505..11a1c7b7 100644
+--- a/core/arch/arm/plat-imx/pta/pta_dek_blob.c
++++ b/core/arch/arm/plat-imx/pta/pta_dek_blob.c
+@@ -95,7 +95,7 @@ static TEE_Result generate_dek_blob_pta(uint32_t param_types,
+ 			  SHIFT_U32(HAB_HDR_ALG_AES, 8) |
+ 			  SHIFT_U32(HAB_HDR_MODE_CCM, 0);
+ 
+-	dek_blob.type = BLOB_RED;
++	dek_blob.type = PLAIN_TEXT;
+ 
+ 	res = caam_blob_sm_encapsulate(&dek_blob, &sm_page);
+ 	if (res != TEE_SUCCESS) {
+diff --git a/core/arch/arm/plat-ls/conf.mk b/core/arch/arm/plat-ls/conf.mk
+index aceaca95..514f2ed5 100644
+--- a/core/arch/arm/plat-ls/conf.mk
++++ b/core/arch/arm/plat-ls/conf.mk
+@@ -171,6 +171,7 @@ ifeq ($(CFG_NXP_CAAM),y)
+ CFG_CRYPTO_DRIVER ?= y
+ CFG_CRYPTO_DRIVER_DEBUG ?= 0
+ else
++CFG_CRYPTO_DRIVER_DEBUG ?= 0
+ $(call force,CFG_CRYPTO_DRIVER,n)
+ $(call force,CFG_WITH_SOFTWARE_PRNG,y)
+ endif
+diff --git a/core/crypto/cbc-mac.c b/core/crypto/cbc-mac.c
+index c38b0581..3e2717ab 100644
+--- a/core/crypto/cbc-mac.c
++++ b/core/crypto/cbc-mac.c
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+  * Copyright (c) 2014-2019, Linaro Limited
++ * Copyright 2021 NXP
+  */
+ 
+ /*
+@@ -40,7 +41,9 @@ static struct crypto_cbc_mac_ctx *to_cbc_mac_ctx(struct crypto_mac_ctx *ctx)
+ }
+ 
+ static TEE_Result crypto_cbc_mac_init(struct crypto_mac_ctx *ctx,
+-				      const uint8_t *key, size_t len)
++				      const uint8_t *key, size_t len,
++				      size_t ikey_origin __unused,
++				      enum bk_type type __unused)
+ {
+ 	struct crypto_cbc_mac_ctx *mc = to_cbc_mac_ctx(ctx);
+ 
+diff --git a/core/crypto/crypto.c b/core/crypto/crypto.c
+index 3037e1e6..d0e12083 100644
+--- a/core/crypto/crypto.c
++++ b/core/crypto/crypto.c
+@@ -1,7 +1,7 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+  * Copyright (c) 2017, Linaro Limited
+- * Copyright 2020 NXP
++ * Copyright 2020-2021 NXP
+  * Copyright 2021, SumUp Service GmbH
+  */
+ 
+@@ -313,7 +313,7 @@ void crypto_mac_copy_state(void *dst_ctx, void *src_ctx)
+ 
+ TEE_Result crypto_mac_init(void *ctx, const uint8_t *key, size_t len)
+ {
+-	return mac_ops(ctx)->init(ctx, key, len);
++	return mac_ops(ctx)->init(ctx, key, len, 0, PLAIN_TEXT);
+ }
+ 
+ TEE_Result crypto_mac_update(void *ctx, const uint8_t *data, size_t len)
+diff --git a/core/crypto/sm3-hmac.c b/core/crypto/sm3-hmac.c
+index abe2ac8d..b4572f6b 100644
+--- a/core/crypto/sm3-hmac.c
++++ b/core/crypto/sm3-hmac.c
+@@ -2,6 +2,7 @@
+ /*
+  * Copyright (C) 2018, ARM Limited
+  * Copyright (C) 2019, Linaro Limited
++ * Copyright 2021 NXP
+  */
+ 
+ #include <assert.h>
+@@ -33,7 +34,9 @@ static struct sm3_hmac_ctx *to_hmac_ctx(struct crypto_mac_ctx *ctx)
+ }
+ 
+ static TEE_Result op_sm3_hmac_init(struct crypto_mac_ctx *ctx,
+-				 const uint8_t *key, size_t len)
++				   const uint8_t *key, size_t len,
++				   size_t ikey_origin __unused,
++				   enum bk_type type __unused)
+ {
+ 	sm3_hmac_init(&to_hmac_ctx(ctx)->sm3_ctx, key, len);
+ 
+diff --git a/core/drivers/crypto/caam/acipher/caam_rsa.c b/core/drivers/crypto/caam/acipher/caam_rsa.c
+index e860c641..b9b91fd4 100644
+--- a/core/drivers/crypto/caam/acipher/caam_rsa.c
++++ b/core/drivers/crypto/caam/acipher/caam_rsa.c
+@@ -306,12 +306,16 @@ static enum caam_status do_keypair_conv_f2(struct caam_rsa_keypair *outkey,
+  * Don't convert the exponent e not used in decrytion
+  *
+  * @outkey   [out] Output keypair in local format
+- * @inkey    Input key in TEE Crypto format
++ * @inkey    Input key in crypto driver format
+  */
+ static enum caam_status do_keypair_conv(struct caam_rsa_keypair *outkey,
+-					const struct rsa_keypair *inkey)
++					const struct drvcrypt_rsakey *key)
+ {
+ 	enum caam_status retstatus = CAAM_FAILURE;
++	struct rsa_keypair *inkey = key->key;
++	uint8_t *ptr_d = NULL;
++	size_t size_d = 0;
++	size_t idx_d = 0;
+ 
+ 	RSA_TRACE("RSA Convert Keypair size N=%zu",
+ 		  crypto_bignum_num_bytes(inkey->n));
+@@ -325,12 +329,31 @@ static enum caam_status do_keypair_conv(struct caam_rsa_keypair *outkey,
+ 	crypto_bignum_bn2bin(inkey->n, outkey->n.data);
+ 	cache_operation(TEE_CACHECLEAN, outkey->n.data, outkey->n.length);
+ 
+-	retstatus = caam_calloc_align_buf(&outkey->d,
+-					  crypto_bignum_num_bytes(inkey->d));
++	/*
++	 * crypto_bignum_bn2bin drops leading zeros
++	 * crypto_bignum_num_bytes starts counting from the first bit set
++	 * CCM black key may have 0 as nonce value so prepends them
++	 */
++	size_d = crypto_bignum_num_bytes(inkey->d);
++
++	if (key->bk_type == BK_CCM) {
++		size_t size_n = crypto_bignum_num_bytes(inkey->n);
++		size_t ccm_size_d = CCM_BLACK_KEY_SIZE(size_n);
++
++		idx_d = ccm_size_d - size_d;
++		size_d = ccm_size_d;
++	}
++
++	retstatus = caam_alloc_align_buf(&outkey->d, size_d);
+ 	if (retstatus != CAAM_NO_ERROR)
+ 		return retstatus;
+ 
+-	crypto_bignum_bn2bin(inkey->d, outkey->d.data);
++	ptr_d = outkey->d.data;
++
++	if (key->bk_type == BK_CCM)
++		memset(ptr_d, 0, size_d);
++
++	crypto_bignum_bn2bin(inkey->d, ptr_d + idx_d);
+ 	cache_operation(TEE_CACHECLEAN, outkey->d.data, outkey->d.length);
+ 
+ 	outkey->format = RSA_PRIVATE_KEY_FORMAT_1;
+@@ -362,7 +385,7 @@ static TEE_Result do_allocate_keypair(struct rsa_keypair *key, size_t size_bits)
+ 		goto err_alloc_keypair;
+ 
+ 	/* Allocate the Private Exponent [d = 1/e mod LCM(p-1, q-1)] */
+-	key->d = crypto_bignum_allocate(size_bits);
++	key->d = crypto_bignum_allocate(size_bits + (CCM_OVERHEAD * 8));
+ 	if (!key->d)
+ 		goto err_alloc_keypair;
+ 
+@@ -1272,14 +1295,20 @@ static TEE_Result do_caam_decrypt(struct drvcrypt_rsa_ed *rsa_data,
+ 	uint32_t pdb_sgt_flags = 0;
+ 	struct caambuf size_msg = { };
+ 	struct caambuf tmp = { };
++	uint32_t decrypt_op_bk_opt = 0;
++
++	RSA_TRACE("RSA Decrypt mode %d, operation %x", rsa_data->rsa_id,
++		  operation);
+ 
+-	RSA_TRACE("RSA Decrypt mode %d", rsa_data->rsa_id);
++	RSA_TRACE("Decrypt cipher %p(%zu) -> message %p(%zu)",
++		  rsa_data->cipher.data, rsa_data->cipher.length,
++		  rsa_data->message.data, rsa_data->message.length);
+ 
+ 	/*
+ 	 * Convert TEE rsa key type to CAAM rsa key type
+ 	 * Push key value to memory
+ 	 */
+-	retstatus = do_keypair_conv(&key, rsa_data->key.key);
++	retstatus = do_keypair_conv(&key, &rsa_data->key);
+ 	if (retstatus != CAAM_NO_ERROR) {
+ 		RSA_TRACE("do_keypair_conv returned 0x%" PRIx32, retstatus);
+ 		ret = caam_status_to_tee_result(retstatus);
+@@ -1356,6 +1385,10 @@ static TEE_Result do_caam_decrypt(struct drvcrypt_rsa_ed *rsa_data,
+ 		goto exit_decrypt;
+ 	}
+ 
++	/* Set the original (plain) key size from modulus size */
++	if (rsa_data->key.bk_type == BK_ECB || rsa_data->key.bk_type == BK_CCM)
++		key.d.length = key.n.length;
++
+ 	caam_desc_init(desc);
+ 	caam_desc_add_word(desc, DESC_HEADER(0));
+ 
+@@ -1412,8 +1445,17 @@ static TEE_Result do_caam_decrypt(struct drvcrypt_rsa_ed *rsa_data,
+ 		goto exit_decrypt;
+ 	}
+ 
++	/* Set the optional parameters to load a black key */
++	if (rsa_data->key.bk_type == BK_ECB ||
++	    rsa_data->key.bk_type == BK_CCM) {
++		decrypt_op_bk_opt |= PROT_RSA_KEY_TYPE(ENC);
++		if (rsa_data->key.bk_type == BK_CCM)
++			decrypt_op_bk_opt |= PROT_RSA_KEY_TYPE(EKT);
++	}
++
+ 	/* Set the Decryption operation type */
+-	caam_desc_add_word(desc, operation | PROT_RSA_DEC_KEYFORM(key.format));
++	caam_desc_add_word(desc, operation | PROT_RSA_DEC_KEYFORM(key.format) |
++					 decrypt_op_bk_opt);
+ 
+ 	if (operation == RSA_DECRYPT(PKCS_V1_5)) {
+ 		/* Get the PPKCS1 v1.5 Message length generated */
+diff --git a/core/drivers/crypto/caam/blob/caam_blob_sm.c b/core/drivers/crypto/caam/blob/caam_blob_sm.c
+index 64e40301..730bb445 100644
+--- a/core/drivers/crypto/caam/blob/caam_blob_sm.c
++++ b/core/drivers/crypto/caam/blob/caam_blob_sm.c
+@@ -38,17 +38,17 @@ TEE_Result caam_blob_sm_encapsulate(struct crypto_blob *blob,
+ 	outsize = blob->payload.length + BLOB_PAD_SIZE;
+ 
+ 	switch (blob->type) {
+-	case BLOB_BLACK_CCM:
+-		opflags = PROT_BLOB_TYPE(BLACK_KEY) | PROT_BLOB_INFO(CCM);
++	case BK_CCM:
++		opflags = PROT_BLOB_TYPE_BLACK_KEY | PROT_BLOB_INFO(CCM);
+ 		outsize = ROUNDUP(BLACK_KEY_CCM_SIZE(outsize), 16);
+ 		break;
+ 
+-	case BLOB_BLACK_ECB:
+-		opflags = PROT_BLOB_TYPE(BLACK_KEY) | PROT_BLOB_INFO(ECB);
++	case BK_ECB:
++		opflags = PROT_BLOB_TYPE_BLACK_KEY | PROT_BLOB_INFO(ECB);
+ 		outsize = ROUNDUP(BLACK_KEY_ECB_SIZE(outsize), 16);
+ 		break;
+ 
+-	case BLOB_RED:
++	case PLAIN_TEXT:
+ 		break;
+ 
+ 	default:
+diff --git a/core/drivers/crypto/caam/caam_desc.c b/core/drivers/crypto/caam/caam_desc.c
+index 361e1aa1..e8043208 100644
+--- a/core/drivers/crypto/caam/caam_desc.c
++++ b/core/drivers/crypto/caam/caam_desc.c
+@@ -162,3 +162,33 @@ void caam_desc_add_dmaobj(uint32_t *desc, struct caamdmaobj *data,
+ 	if (op_length != data->sgtbuf.length)
+ 		caam_desc_add_word(desc, data->sgtbuf.length);
+ }
++
++void caam_desc_add_key(uint32_t *desc, enum bk_type keytype, paddr_t ptr_key,
++		       size_t key_size, int key_class, size_t key_real_len,
++		       bool splitkey)
++{
++	if (keytype == PLAIN_TEXT) {
++		if (splitkey)
++			caam_desc_add_word(desc, LD_KEY_SPLIT(key_size));
++		else
++			caam_desc_add_word(desc, LD_KEY_PLAIN(key_class, REG,
++							      key_size));
++	} else if (keytype == BK_ECB) {
++		if (splitkey)
++			caam_desc_add_word(desc, LD_KEY_SPLIT(key_real_len) |
++							 KEY_ENC |
++							 KEY_EKT(ECB));
++		else
++			caam_desc_add_word(desc, LD_KEY_ENC(key_class, REG,
++							    key_real_len, ECB));
++	} else if (keytype == BK_CCM) {
++		if (splitkey)
++			caam_desc_add_word(desc, LD_KEY_SPLIT(key_real_len) |
++							 KEY_ENC |
++							 KEY_EKT(CCM));
++		else
++			caam_desc_add_word(desc, LD_KEY_ENC(key_class, REG,
++							    key_real_len, CCM));
++	}
++	caam_desc_add_ptr(desc, ptr_key);
++}
+diff --git a/core/drivers/crypto/caam/cipher/caam_cipher.c b/core/drivers/crypto/caam/cipher/caam_cipher.c
+index 29cb8f41..91b27cf3 100644
+--- a/core/drivers/crypto/caam/cipher/caam_cipher.c
++++ b/core/drivers/crypto/caam/cipher/caam_cipher.c
+@@ -122,20 +122,20 @@ static const struct cipheralg des3_alg[] = {
+  * @dst  [out] Destination data to allocate and fill
+  * @src  Source of data to copy
+  */
+-static enum caam_status copy_ctx_data(struct caambuf *dst,
+-				      struct drvcrypt_buf *src)
++static enum caam_status copy_ctx_data(struct caambuf *dst, const uint8_t *data,
++				      size_t length)
+ {
+ 	enum caam_status ret = CAAM_OUT_MEMORY;
+ 
+ 	if (!dst->data) {
+ 		/* Allocate the destination buffer */
+-		ret = caam_alloc_align_buf(dst, src->length);
++		ret = caam_alloc_align_buf(dst, length);
+ 		if (ret != CAAM_NO_ERROR)
+ 			return CAAM_OUT_MEMORY;
+ 	}
+ 
+ 	/* Do the copy */
+-	memcpy(dst->data, src->data, dst->length);
++	memcpy(dst->data, data, dst->length);
+ 
+ 	/* Push data to physical memory */
+ 	cache_operation(TEE_CACHEFLUSH, dst->data, dst->length);
+@@ -170,17 +170,14 @@ enum caam_status caam_cipher_block(struct cipherdata *ctx, bool savectx,
+ 	caam_desc_init(desc);
+ 	caam_desc_add_word(desc, DESC_HEADER(0));
+ 
+-	if (keyid == NEED_KEY1) {
+-		/* Build the descriptor */
+-		caam_desc_add_word(desc, LD_KEY_PLAIN(CLASS_1, REG,
+-						      ctx->key1.length));
+-		caam_desc_add_ptr(desc, ctx->key1.paddr);
+-	} else if (keyid == NEED_KEY2) {
+-		/* Build the descriptor */
+-		caam_desc_add_word(desc, LD_KEY_PLAIN(CLASS_1, REG,
+-						      ctx->key2.length));
+-		caam_desc_add_ptr(desc, ctx->key2.paddr);
+-	}
++	if (keyid == NEED_KEY1)
++		caam_desc_add_key(desc, ctx->key1.type, ctx->key1.buf.paddr,
++				  ctx->key1.buf.length, CLASS_1, ctx->key1.size,
++				  false);
++	else if (keyid == NEED_KEY2)
++		caam_desc_add_key(desc, ctx->key2.type, ctx->key2.buf.paddr,
++				  ctx->key2.buf.length, CLASS_1, ctx->key2.size,
++				  false);
+ 
+ 	/* If there is a context register load it */
+ 	if (ctx->ctx.length && ctx->alg->size_ctx) {
+@@ -340,10 +337,10 @@ static void do_free_intern(struct cipherdata *ctx)
+ 		caam_free_desc(&ctx->descriptor);
+ 
+ 		/* Free the Key 1  */
+-		caam_free_buf(&ctx->key1);
++		caam_free_buf(&ctx->key1.buf);
+ 
+ 		/* Free the Key 2  */
+-		caam_free_buf(&ctx->key2);
++		caam_free_buf(&ctx->key2.buf);
+ 
+ 		/* Free the Tweak */
+ 		caam_free_buf(&ctx->tweak);
+@@ -384,38 +381,28 @@ void caam_cipher_copy_state(void *dst_ctx, void *src_ctx)
+ 		caam_cpy_block_src(&dst->blockbuf, &srcdata, 0);
+ 	}
+ 
+-	if (src->key1.length) {
+-		struct drvcrypt_buf key1 = {
+-			.data = src->key1.data,
+-			.length = src->key1.length
+-		};
+-		copy_ctx_data(&dst->key1, &key1);
++	if (src->key1.size) {
++		copy_ctx_data(&dst->key1.buf, src->key1.buf.data,
++			      src->key1.buf.length);
++		dst->key1.type = src->key1.type;
++		dst->key1.size = src->key1.size;
+ 	}
+ 
+-	if (src->key2.length) {
+-		struct drvcrypt_buf key2 = {
+-			.data = src->key2.data,
+-			.length = src->key2.length
+-		};
+-		copy_ctx_data(&dst->key2, &key2);
++	if (src->key2.size) {
++		copy_ctx_data(&dst->key2.buf, src->key2.buf.data,
++			      src->key2.buf.length);
++		dst->key2.type = src->key2.type;
++		dst->key2.size = src->key2.size;
+ 	}
+ 
+ 	if (src->ctx.length) {
+-		struct drvcrypt_buf ctx = {
+-			.data = src->ctx.data,
+-			.length = src->ctx.length
+-		};
+-		cache_operation(TEE_CACHEINVALIDATE, ctx.data, ctx.length);
+-		copy_ctx_data(&dst->ctx, &ctx);
++		cache_operation(TEE_CACHEINVALIDATE, src->ctx.data,
++				src->ctx.length);
++		copy_ctx_data(&dst->ctx, src->ctx.data, src->ctx.length);
+ 	}
+ 
+-	if (src->tweak.length) {
+-		struct drvcrypt_buf tweak = {
+-			.data = src->tweak.data,
+-			.length = src->tweak.length
+-		};
+-		copy_ctx_data(&dst->tweak, &tweak);
+-	}
++	if (src->tweak.length)
++		copy_ctx_data(&dst->tweak, src->tweak.data, src->tweak.length);
+ }
+ 
+ TEE_Result caam_cipher_initialize(struct drvcrypt_cipher_init *dinit)
+@@ -434,17 +421,23 @@ TEE_Result caam_cipher_initialize(struct drvcrypt_cipher_init *dinit)
+ 
+ 	/* Check if all required keys are defined */
+ 	if (alg->require_key & NEED_KEY1) {
+-		if (!dinit->key1.data || !dinit->key1.length)
++		if (!dinit->key1.buf.data || !dinit->key1.buf.length ||
++		    !dinit->key1.size)
+ 			goto out;
+ 
+-		retstatus = do_check_keysize(&alg->def_key, dinit->key1.length);
++		retstatus = do_check_keysize(&alg->def_key, dinit->key1.size);
++
+ 		if (retstatus != CAAM_NO_ERROR) {
+ 			CIPHER_TRACE("Bad Key 1 size");
+ 			goto out;
+ 		}
+ 
+ 		/* Copy the key 1 */
+-		retstatus = copy_ctx_data(&cipherdata->key1, &dinit->key1);
++		cipherdata->key1.size = dinit->key1.size;
++		cipherdata->key1.type = dinit->key1.type;
++		retstatus = copy_ctx_data(&cipherdata->key1.buf,
++					  dinit->key1.buf.data,
++					  dinit->key1.buf.length);
+ 		CIPHER_TRACE("Copy Key 1 returned 0x%" PRIx32, retstatus);
+ 
+ 		if (retstatus != CAAM_NO_ERROR) {
+@@ -454,17 +447,23 @@ TEE_Result caam_cipher_initialize(struct drvcrypt_cipher_init *dinit)
+ 	}
+ 
+ 	if (alg->require_key & NEED_KEY2) {
+-		if (!dinit->key2.data || !dinit->key2.length)
++		if (!dinit->key2.buf.data || !dinit->key2.buf.length ||
++		    !dinit->key2.size)
+ 			goto out;
+ 
+-		retstatus = do_check_keysize(&alg->def_key, dinit->key2.length);
++		retstatus = do_check_keysize(&alg->def_key, dinit->key2.size);
++
+ 		if (retstatus != CAAM_NO_ERROR) {
+ 			CIPHER_TRACE("Bad Key 2 size");
+ 			goto out;
+ 		}
+ 
+ 		/* Copy the key 2 */
+-		retstatus = copy_ctx_data(&cipherdata->key2, &dinit->key2);
++		cipherdata->key2.size = dinit->key2.size;
++		cipherdata->key2.type = dinit->key2.type;
++		retstatus = copy_ctx_data(&cipherdata->key2.buf,
++					  dinit->key2.buf.data,
++					  dinit->key2.buf.length);
+ 		CIPHER_TRACE("Copy Key 2 returned 0x%" PRIx32, retstatus);
+ 
+ 		if (retstatus != CAAM_NO_ERROR) {
+@@ -488,7 +487,8 @@ TEE_Result caam_cipher_initialize(struct drvcrypt_cipher_init *dinit)
+ 			     alg->size_ctx);
+ 
+ 		/* Copy the IV into the context register */
+-		retstatus = copy_ctx_data(&cipherdata->ctx, &dinit->iv);
++		retstatus = copy_ctx_data(&cipherdata->ctx, dinit->iv.data,
++					  dinit->iv.length);
+ 		CIPHER_TRACE("Copy IV returned 0x%" PRIx32, retstatus);
+ 
+ 		if (retstatus != CAAM_NO_ERROR) {
+@@ -507,7 +507,8 @@ TEE_Result caam_cipher_initialize(struct drvcrypt_cipher_init *dinit)
+ 
+ 			/* Copy the tweak */
+ 			retstatus = copy_ctx_data(&cipherdata->tweak,
+-						  &dinit->iv);
++						  dinit->iv.data,
++						  dinit->iv.length);
+ 			CIPHER_TRACE("Copy Tweak returned 0x%" PRIx32,
+ 				     retstatus);
+ 
+diff --git a/core/drivers/crypto/caam/cipher/caam_cipher_mac.c b/core/drivers/crypto/caam/cipher/caam_cipher_mac.c
+index 511bfc69..ebed9ee9 100644
+--- a/core/drivers/crypto/caam/cipher/caam_cipher_mac.c
++++ b/core/drivers/crypto/caam/cipher/caam_cipher_mac.c
+@@ -306,12 +306,10 @@ static TEE_Result run_cmac_desc(struct cipherdata *ctx, struct caamdmaobj *src,
+ 	caam_desc_init(desc);
+ 	caam_desc_add_word(desc, DESC_HEADER(0));
+ 
+-	if (ctx->alg->require_key & NEED_KEY1) {
+-		/* Build the descriptor */
+-		caam_desc_add_word(desc, LD_KEY_PLAIN(CLASS_1, REG,
+-						      ctx->key1.length));
+-		caam_desc_add_ptr(desc, ctx->key1.paddr);
+-	}
++	if (ctx->alg->require_key & NEED_KEY1)
++		caam_desc_add_key(desc, ctx->key1.type, ctx->key1.buf.paddr,
++				  ctx->key1.buf.length, CLASS_1, ctx->key1.size,
++				  false);
+ 
+ 	/* If context already allocated, this is an update */
+ 	if (ctx->ctx.length) {
+@@ -567,7 +565,8 @@ end_cmac:
+  * @len  Key length
+  */
+ static TEE_Result do_cmac_init(struct crypto_mac_ctx *ctx, const uint8_t *key,
+-			       size_t len)
++			       size_t len, size_t ikey_origin __unused,
++			       enum bk_type type __unused)
+ {
+ 	TEE_Result ret = TEE_ERROR_GENERIC;
+ 	uint8_t *iv_tmp = NULL;
+@@ -596,10 +595,14 @@ static TEE_Result do_cmac_init(struct crypto_mac_ctx *ctx, const uint8_t *key,
+ 	/* Prepare the initialization data */
+ 	dinit.ctx = macdata;
+ 	dinit.encrypt = true;
+-	dinit.key1.data = (uint8_t *)key;
+-	dinit.key1.length = len;
+-	dinit.key2.data = NULL;
+-	dinit.key2.length = 0;
++	dinit.key1.buf.data = (uint8_t *)key;
++	dinit.key1.buf.length = len;
++	dinit.key1.type = PLAIN_TEXT;
++	dinit.key1.size = len;
++	dinit.key2.buf.data = NULL;
++	dinit.key2.buf.length = 0;
++	dinit.key2.type = PLAIN_TEXT;
++	dinit.key2.size = 0;
+ 	dinit.iv.data = iv_tmp;
+ 	dinit.iv.length = macdata->alg->size_ctx;
+ 	ret = caam_cipher_initialize(&dinit);
+diff --git a/core/drivers/crypto/caam/cipher/local.h b/core/drivers/crypto/caam/cipher/local.h
+index ac0965da..549bef9f 100644
+--- a/core/drivers/crypto/caam/cipher/local.h
++++ b/core/drivers/crypto/caam/cipher/local.h
+@@ -48,8 +48,8 @@ struct cipheralg {
+ struct cipherdata {
+ 	uint32_t *descriptor;        /* Job descriptor */
+ 	bool encrypt;                /* Encrypt direction */
+-	struct caambuf key1;         /* First Key */
+-	struct caambuf key2;         /* Second Key */
++	struct caamkey key1;	     /* First Key */
++	struct caamkey key2;	     /* Second Key */
+ 	struct caambuf tweak;        /* XTS Tweak */
+ 	struct caambuf ctx;          /* CAAM Context Register */
+ 	struct caamblock blockbuf;   /* Temporary Block buffer */
+diff --git a/core/drivers/crypto/caam/hash/caam_hash.c b/core/drivers/crypto/caam/hash/caam_hash.c
+index fbcf4a49..cd693ac8 100644
+--- a/core/drivers/crypto/caam/hash/caam_hash.c
++++ b/core/drivers/crypto/caam/hash/caam_hash.c
+@@ -115,13 +115,14 @@ static struct crypto_hash *to_hash_ctx(struct crypto_hash_ctx *ctx)
+  * @desc    CAAM Descriptor
+  * @key     Key to load
+  */
+-static void do_desc_load_key(uint32_t *desc, struct caambuf *key)
++static void do_desc_load_key(uint32_t *desc, const struct caamkey *key)
+ {
+ 	HASH_TRACE("Insert Key");
+-	caam_desc_add_word(desc, LD_KEY_SPLIT(key->length));
+-	caam_desc_add_ptr(desc, key->paddr);
+ 
+-	cache_operation(TEE_CACHECLEAN, key->data, key->length);
++	caam_desc_add_key(desc, key->type, key->buf.paddr, key->buf.length,
++			  CLASS_1, key->size, true);
++
++	cache_operation(TEE_CACHECLEAN, key->buf.data, key->buf.length);
+ }
+ 
+ /*
+@@ -144,7 +145,7 @@ static void do_free_intern(struct hashctx *ctx)
+ 		caam_free_buf(&ctx->ctx);
+ 
+ 		/* Free the HMAC Key */
+-		caam_free_buf(&ctx->key);
++		caam_free_buf(&ctx->key.buf);
+ 	}
+ }
+ 
+@@ -293,6 +294,7 @@ err:
+ TEE_Result caam_hash_hmac_allocate(struct hashctx *ctx)
+ {
+ 	TEE_Result ret = TEE_ERROR_GENERIC;
++	size_t size_to_alloc = 0;
+ 
+ 	HASH_TRACE("Allocate Context (%p)", ctx);
+ 
+@@ -315,8 +317,9 @@ TEE_Result caam_hash_hmac_allocate(struct hashctx *ctx)
+ 		goto err;
+ 	}
+ 
+-	/* Allocate the Hash Key */
+-	if (caam_calloc_align_buf(&ctx->key, ctx->alg->size_key) !=
++	/* Allocate the Hash Key, allocate the worst case size, eg BK CCM */
++	size_to_alloc = CCM_BLACK_KEY_SIZE(ctx->alg->size_key);
++	if (caam_calloc_align_buf(&ctx->key.buf, size_to_alloc) !=
+ 	    CAAM_NO_ERROR) {
+ 		HASH_TRACE("Allocation context key error");
+ 		ret = TEE_ERROR_OUT_OF_MEMORY;
+@@ -328,6 +331,10 @@ TEE_Result caam_hash_hmac_allocate(struct hashctx *ctx)
+ 	/* Ensure buffer length is 0 */
+ 	ctx->ctx.length = 0;
+ 
++	ctx->key.buf.length = 0;
++	ctx->key.size = 0;
++	ctx->key.type = PLAIN_TEXT;
++
+ 	return TEE_SUCCESS;
+ 
+ err:
+@@ -365,8 +372,10 @@ const struct hashalg *caam_hash_get_alg(uint32_t algo)
+ TEE_Result caam_hash_hmac_init(struct hashctx *ctx)
+ {
+ 	HASH_TRACE("Hash/HMAC Init (%p)", ctx);
+-	if (!ctx)
++	if (!ctx) {
++		HASH_TRACE("No context");
+ 		return TEE_ERROR_BAD_PARAMETERS;
++	}
+ 
+ 	/* Initialize the block buffer */
+ 	ctx->blockbuf.filled = 0;
+@@ -376,7 +385,7 @@ TEE_Result caam_hash_hmac_init(struct hashctx *ctx)
+ 	ctx->ctx.length = 0;
+ 
+ 	/* Initialize the HMAC Key */
+-	ctx->key.length = 0;
++	ctx->key.buf.length = 0;
+ 
+ 	ctx->initialized = true;
+ 
+@@ -413,7 +422,7 @@ static TEE_Result do_update_hash(struct hashctx *ctx, struct caamdmaobj *src)
+ 		HASH_TRACE("Init Operation");
+ 
+ 		/* Check if there is a key to load it */
+-		if (ctx->key.length) {
++		if (ctx->key.buf.length) {
+ 			do_desc_load_key(desc, &ctx->key);
+ 
+ 			/* Algo Operation - HMAC Init */
+@@ -601,13 +610,13 @@ TEE_Result caam_hash_hmac_final(struct hashctx *ctx, uint8_t *digest,
+ 	caam_desc_add_word(desc, DESC_HEADER(0));
+ 
+ 	/* Load key if any */
+-	if (ctx->key.length)
++	if (ctx->key.buf.length)
+ 		do_desc_load_key(desc, &ctx->key);
+ 
+ 	if (ctx->ctx.length) {
+ 		HASH_TRACE("Final Operation");
+ 
+-		if (ctx->key.length)
++		if (ctx->key.buf.length)
+ 			caam_desc_add_word(desc, HMAC_FINAL_PRECOMP(alg->type));
+ 		else
+ 			caam_desc_add_word(desc, HASH_FINAL(alg->type));
+@@ -623,7 +632,7 @@ TEE_Result caam_hash_hmac_final(struct hashctx *ctx, uint8_t *digest,
+ 		ctx->ctx.length = 0;
+ 	} else {
+ 		HASH_TRACE("Init/Final Operation");
+-		if (ctx->key.length)
++		if (ctx->key.buf.length)
+ 			caam_desc_add_word(desc,
+ 					   HMAC_INITFINAL_PRECOMP(alg->type));
+ 		else
+@@ -697,9 +706,11 @@ void caam_hash_hmac_copy_state(struct hashctx *dst, struct hashctx *src)
+ 		caam_cpy_block_src(&dst->blockbuf, &srcdata, 0);
+ 	}
+ 
+-	if (src->key.data) {
+-		memcpy(dst->key.data, src->key.data, src->key.length);
+-		dst->key.length = src->key.length;
++	if (src->key.buf.data) {
++		memcpy(dst->key.buf.data, src->key.buf.data,
++		       src->key.buf.length);
++		dst->key.buf.length = src->key.buf.length;
++		dst->key.type = src->key.type;
+ 	}
+ }
+ 
+diff --git a/core/drivers/crypto/caam/hash/caam_hash_mac.c b/core/drivers/crypto/caam/hash/caam_hash_mac.c
+index 5b5ab8be..a5074b05 100644
+--- a/core/drivers/crypto/caam/hash/caam_hash_mac.c
++++ b/core/drivers/crypto/caam/hash/caam_hash_mac.c
+@@ -119,9 +119,12 @@ out:
+  * @ctx   Operation software context
+  * @key   Input key to compute
+  * @len   Key length
++ * @ikey_origin   Original length of the key
++ * @type   type of the key
+  */
+ static TEE_Result do_hmac_init(struct crypto_mac_ctx *ctx, const uint8_t *inkey,
+-			       size_t len)
++			       size_t len, size_t ikey_origin,
++			       enum bk_type type)
+ {
+ 	TEE_Result ret = TEE_ERROR_GENERIC;
+ 	enum caam_status retstatus = CAAM_FAILURE;
+@@ -134,21 +137,34 @@ static TEE_Result do_hmac_init(struct crypto_mac_ctx *ctx, const uint8_t *inkey,
+ 
+ 	/* First initialize the context */
+ 	ret = caam_hash_hmac_init(hmac_ctx);
+-	if (ret != TEE_SUCCESS)
++	if (ret != TEE_SUCCESS) {
++		HASH_TRACE("caam_hash_hmac_init failed %x", ret);
+ 		return ret;
++	}
++
++	if (type == PLAIN_TEXT)
++		hmac_ctx->key.buf.length = alg->size_key;
++	else if (type == BK_ECB)
++		hmac_ctx->key.buf.length = ECB_BLACK_KEY_SIZE(alg->size_key);
++	else if (type == BK_CCM)
++		hmac_ctx->key.buf.length = CCM_BLACK_KEY_SIZE(alg->size_key);
+ 
+-	HASH_TRACE("split key length %zu", len);
++	HASH_TRACE("HMAC key %p(%zu) type: %d size: %zu -> splitkey %zu", inkey,
++		   len, type, ikey_origin, hmac_ctx->key.buf.length);
++	HASH_DUMPBUF("Input Key", inkey, len);
+ 
+ 	/* Allocate the job descriptor */
+ 	desc = caam_calloc_desc(KEY_COMPUTE_DESC_ENTRIES);
+ 	if (!desc) {
++		HASH_TRACE("Failed to allocate descriptor");
+ 		ret = TEE_ERROR_OUT_OF_MEMORY;
+ 		goto out;
+ 	}
+ 
+-	hmac_ctx->key.length = alg->size_key;
++	hmac_ctx->key.type = type;
++	hmac_ctx->key.size = alg->size_key;
+ 
+-	if (len > alg->size_block) {
++	if (type == PLAIN_TEXT && len > alg->size_block) {
+ 		HASH_TRACE("Input key must be reduced");
+ 
+ 		ret = caam_dmaobj_output_sgtbuf(&reduce_key, NULL, 0,
+@@ -159,38 +175,53 @@ static TEE_Result do_hmac_init(struct crypto_mac_ctx *ctx, const uint8_t *inkey,
+ 		}
+ 
+ 		retstatus = do_reduce_key(&reduce_key, alg, inkey, len);
+-		if (retstatus != CAAM_NO_ERROR)
++		if (retstatus != CAAM_NO_ERROR) {
++			HASH_TRACE("Failed to reduce key");
+ 			goto out;
++		}
+ 	} else {
+ 		/* Key size is correct use directly the input key */
+ 		ret = caam_dmaobj_input_sgtbuf(&reduce_key, inkey, len);
+-		if (ret)
++		if (ret) {
++			HASH_TRACE("Failed to create input sgtbuf");
+ 			goto out;
++		}
+ 	}
+ 
++	/* Create the split key for the reduced key */
+ 	caam_desc_init(desc);
+ 	caam_desc_add_word(desc, DESC_HEADER(0));
+-	/* Load either input key or the reduced input key into key register */
+-	caam_desc_load_key(desc, &reduce_key, CLASS_2, REG);
++
++	caam_desc_add_key(desc, type, reduce_key.sgtbuf.paddr,
++			  reduce_key.sgtbuf.length, CLASS_2, ikey_origin,
++			  false);
++
+ 	/* Split the key */
+ 	caam_desc_add_word(desc, HMAC_INIT_DECRYPT(alg->type));
+ 	caam_desc_add_word(desc, FIFO_LD_IMM(CLASS_2, MSG, LAST_C2, 0));
+ 	/* Store the split key */
+-	caam_desc_add_word(desc, FIFO_ST(C2_MDHA_SPLIT_KEY_AES_ECB_JKEK,
+-					 hmac_ctx->key.length));
+-	caam_desc_add_ptr(desc, hmac_ctx->key.paddr);
++	if (type == PLAIN_TEXT || type == BK_ECB)
++		caam_desc_add_word(desc, FIFO_ST(C2_MDHA_SPLIT_KEY_AES_ECB_JKEK,
++						 hmac_ctx->key.size));
++	else
++		caam_desc_add_word(desc, FIFO_ST(C2_MDHA_SPLIT_KEY_AES_CCM_JKEK,
++						 hmac_ctx->key.size));
++	caam_desc_add_ptr(desc, hmac_ctx->key.buf.paddr);
++
+ 	HASH_DUMPDESC(desc);
+ 
++	/* Sync the data */
+ 	caam_dmaobj_cache_push(&reduce_key);
+-	cache_operation(TEE_CACHEFLUSH, hmac_ctx->key.data,
+-			hmac_ctx->key.length);
++	cache_operation(TEE_CACHEFLUSH, hmac_ctx->key.buf.data,
++			hmac_ctx->key.buf.length);
+ 
+ 	jobctx.desc = desc;
+ 	retstatus = caam_jr_enqueue(&jobctx, NULL);
+-
+ 	if (retstatus == CAAM_NO_ERROR) {
+-		HASH_DUMPBUF("Split Key", hmac_ctx->key.data,
+-			     hmac_ctx->key.length);
++		cache_operation(TEE_CACHEINVALIDATE, hmac_ctx->key.buf.data,
++				hmac_ctx->key.buf.length);
++		HASH_DUMPBUF("Split Key", hmac_ctx->key.buf.data,
++			     hmac_ctx->key.buf.length);
+ 
+ 		ret = TEE_SUCCESS;
+ 	} else {
+@@ -297,15 +328,20 @@ static TEE_Result caam_hmac_allocate(struct crypto_mac_ctx **ctx, uint32_t algo)
+ 	*ctx = NULL;
+ 
+ 	alg = caam_hash_get_alg(algo);
+-	if (!alg)
++	if (!alg) {
++		HASH_TRACE("Algo %x invalid", algo);
+ 		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
+ 
+ 	mac = calloc(1, sizeof(*mac));
+-	if (!mac)
++	if (!mac) {
++		HASH_TRACE("Failed to allocate mac structure");
+ 		return TEE_ERROR_OUT_OF_MEMORY;
++	}
+ 
+ 	hmac_ctx = caam_calloc(sizeof(*hmac_ctx));
+ 	if (!hmac_ctx) {
++		HASH_TRACE("Failed to allocate hmac context structure");
+ 		ret = TEE_ERROR_OUT_OF_MEMORY;
+ 		goto err;
+ 	}
+@@ -317,8 +353,10 @@ static TEE_Result caam_hmac_allocate(struct crypto_mac_ctx **ctx, uint32_t algo)
+ 	*ctx = &mac->mac_ctx;
+ 
+ 	ret = caam_hash_hmac_allocate(hmac_ctx);
+-	if (ret != TEE_SUCCESS)
++	if (ret != TEE_SUCCESS) {
++		HASH_TRACE("Failed to allocate hmac context");
+ 		goto err;
++	}
+ 
+ 	HASH_TRACE("Allocated Context (%p)", hmac_ctx);
+ 
+@@ -340,7 +378,7 @@ enum caam_status caam_hmac_init(struct caam_jrcfg *caam_jrcfg)
+ 
+ 	if (caam_hash_limit != UINT8_MAX &&
+ 	    caam_hal_ctrl_splitkey_support(jr_base)) {
+-		if (drvcrypt_register_hmac(&caam_hmac_allocate))
++		if (drvcrypt_register_hmac(caam_hmac_allocate))
+ 			return CAAM_FAILURE;
+ 	}
+ 
+diff --git a/core/drivers/crypto/caam/hash/local.h b/core/drivers/crypto/caam/hash/local.h
+index 01da0637..1c4ab833 100644
+--- a/core/drivers/crypto/caam/hash/local.h
++++ b/core/drivers/crypto/caam/hash/local.h
+@@ -8,6 +8,7 @@
+ #define __LOCAL_H__
+ 
+ #include <caam_common.h>
++#include <drivers/caam/crypto_extension.h>
+ 
+ /*
+  * Full hashing/HMAC data SW context
+@@ -17,7 +18,7 @@ struct hashctx {
+ 	struct caamblock blockbuf; /* Temporary block buffer */
+ 	struct caambuf ctx;	   /* Hash context used by the CAAM */
+ 	const struct hashalg *alg; /* Reference to the algo constants */
+-	struct caambuf key;	   /* HMAC split key */
++	struct caamkey key;	   /* HMAC split key */
+ 	bool initialized;	   /* Context initialization flag */
+ };
+ 
+diff --git a/core/drivers/crypto/caam/include/caam_desc_defines.h b/core/drivers/crypto/caam/include/caam_desc_defines.h
+index ebad51ac..c035b847 100644
+--- a/core/drivers/crypto/caam/include/caam_desc_defines.h
++++ b/core/drivers/crypto/caam/include/caam_desc_defines.h
+@@ -43,6 +43,15 @@
+  */
+ #define CMD_KEY_TYPE		CMD_TYPE(0x00)
+ 
++/* Encrypted Store */
++#define KEY_TK	BIT32(15)
++#define KEY_ENC BIT32(22)
++
++/* Key encryption algorithm */
++#define KEY_EKT(val) SHIFT_U32((KEY_EKT_##val) & 0x1, 20)
++#define KEY_EKT_ECB  0x0
++#define KEY_EKT_CCM  0x1
++
+ /* Key Destination */
+ #define KEY_DEST(val)		SHIFT_U32((KEY_DEST_##val) & 0x3, 16)
+ #define KEY_DEST_REG		0x0
+@@ -325,6 +334,13 @@
+ #define PROT_RSA_KEY_ALL	0
+ #define PROT_RSA_KEY_N_D	2
+ 
++/* RSA black key */
++#define PROT_RSA_KEY_TYPE(type) SHIFT_U32(PROT_RSA_KEY_##type, 8)
++#define PROT_RSA_KEY_RED	0
++#define PROT_RSA_KEY_ENC	1
++#define PROT_RSA_KEY_TK_ENC	5
++#define PROT_RSA_KEY_EKT	3
++
+ /*
+  * ECC Protocol Information
+  */
+@@ -338,7 +354,6 @@
+  * BLOB Protocol Information
+  */
+ #define PROT_BLOB_FMT_MSTR		BIT32(1)
+-#define PROT_BLOB_TYPE(type)		SHIFT_U32(1, PROT_BLOB_TYPE_##type)
+ #define PROT_BLOB_TYPE_BLACK_KEY	BIT32(2)
+ #define PROT_BLOB_SEC_MEM		BIT32(3)
+ #define PROT_BLOB_EKT			8
+diff --git a/core/drivers/crypto/caam/include/caam_desc_helper.h b/core/drivers/crypto/caam/include/caam_desc_helper.h
+index 0f8f5faa..76896a4e 100644
+--- a/core/drivers/crypto/caam/include/caam_desc_helper.h
++++ b/core/drivers/crypto/caam/include/caam_desc_helper.h
+@@ -24,6 +24,9 @@ void caam_desc_add_ptr(uint32_t *desc, paddr_t ptr);
+ void caam_desc_add_word(uint32_t *desc, uint32_t word);
+ void caam_desc_add_dmaobj(uint32_t *desc, struct caamdmaobj *data,
+ 			  uint32_t pre_operation);
++void caam_desc_add_key(uint32_t *desc, enum bk_type keytype, paddr_t ptr_key,
++		       size_t key_size, int key_class, size_t key_real_len,
++		       bool splitkey);
+ 
+ #define caam_desc_fifo_load(desc, data, cla, dst, act)                         \
+ 	caam_desc_add_dmaobj(desc, data, FIFO_LD(cla, dst, act, 0))
+@@ -135,6 +138,16 @@ static inline void dump_desc(uint32_t *desc)
+ 	(CMD_LOAD_TYPE | CMD_CLASS(cla) | CMD_IMM | LOAD_DST(dst) |            \
+ 	 LOAD_LENGTH(len))
+ 
++/*
++ * Load black key of length len to register dst.
++ * A black key is encrypted with JDKEK (AES-ECB/CCM)
++ * For black key, the Class 2 key must be loaded prior to the Class 1 register,
++ * and the Class 1 black keys must be loaded prior any resources.
++ */
++#define LD_KEY_ENC(cla, dst, len, alg) \
++	(CMD_KEY_TYPE | CMD_CLASS(cla) | KEY_ENC | KEY_DEST(dst) | \
++	 KEY_EKT(alg) | KEY_LENGTH(len))
++
+ /**
+  * @brief  Load Immediate value of length \a len to register \a dst of
+  *         class \a cla starting of register offset \a off
+diff --git a/core/drivers/crypto/caam/include/caam_types.h b/core/drivers/crypto/caam/include/caam_types.h
+index ffa0638f..1a0a09a4 100644
+--- a/core/drivers/crypto/caam/include/caam_types.h
++++ b/core/drivers/crypto/caam/include/caam_types.h
+@@ -9,6 +9,7 @@
+ #define __CAAM_TYPES_H__
+ 
+ #include <types_ext.h>
++#include <drivers/caam/crypto_extension.h>
+ 
+ /*
+  * Definition of a CAAM buffer type
+@@ -20,6 +21,13 @@ struct caambuf {
+ 	uint8_t nocache; /* =1 if buffer is not cacheable, 0 otherwise */
+ };
+ 
++/* Used to encapsulate the buffer for a key which can be black */
++struct caamkey {
++	struct caambuf buf; /* Key buffer structure */
++	enum bk_type type;  /* Type of the key */
++	size_t size;	    /* Original size of the key */
++};
++
+ /*
+  * Definition of a CAAM Block buffer. Buffer used to store
+  * user source data to build a full algorithm block buffer
+diff --git a/core/drivers/crypto/crypto_api/cipher/cipher.c b/core/drivers/crypto/crypto_api/cipher/cipher.c
+index 0ada890f..0c4ca64b 100644
+--- a/core/drivers/crypto/crypto_api/cipher/cipher.c
++++ b/core/drivers/crypto/crypto_api/cipher/cipher.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright 2018-2020 NXP
++ * Copyright 2018-2021 NXP
+  *
+  * Crypto Cipher interface implementation to enable HW driver.
+  */
+@@ -82,7 +82,7 @@ static TEE_Result cipher_init(struct crypto_cipher_ctx *ctx,
+ 	if ((!key1 && key1_len) || (!key2 && key2_len) || (!iv && iv_len)) {
+ 		CRYPTO_TRACE("One of the key is not correct");
+ 		CRYPTO_TRACE("key1 @%p-%zu bytes", key1, key1_len);
+-		CRYPTO_TRACE("key2 @%p-%zu bytes", key1, key1_len);
++		CRYPTO_TRACE("key2 @%p-%zu bytes", key2, key2_len);
+ 		CRYPTO_TRACE("iv   @%p-%zu bytes", iv, iv_len);
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+@@ -91,10 +91,14 @@ static TEE_Result cipher_init(struct crypto_cipher_ctx *ctx,
+ 		struct drvcrypt_cipher_init dinit = {
+ 			.ctx = cipher->ctx,
+ 			.encrypt = (mode == TEE_MODE_ENCRYPT),
+-			.key1.data = (uint8_t *)key1,
+-			.key1.length = key1_len,
+-			.key2.data = (uint8_t *)key2,
+-			.key2.length = key2_len,
++			.key1.buf.data = (uint8_t *)key1,
++			.key1.buf.length = key1_len,
++			.key1.type = PLAIN_TEXT,
++			.key1.size = key1_len,
++			.key2.buf.data = (uint8_t *)key2,
++			.key2.buf.length = key2_len,
++			.key2.type = PLAIN_TEXT,
++			.key2.size = key2_len,
+ 			.iv.data = (uint8_t *)iv,
+ 			.iv.length = iv_len,
+ 		};
+diff --git a/core/drivers/crypto/crypto_api/include/drvcrypt.h b/core/drivers/crypto/crypto_api/include/drvcrypt.h
+index 93ddb22c..cecb4468 100644
+--- a/core/drivers/crypto/crypto_api/include/drvcrypt.h
++++ b/core/drivers/crypto/crypto_api/include/drvcrypt.h
+@@ -51,15 +51,25 @@ enum drvcrypt_algo_id {
+ 	CRYPTO_HASH = 0, /* Hash driver */
+ 	CRYPTO_HMAC,	 /* HMAC driver */
+ 	CRYPTO_CMAC,	 /* CMAC driver */
+-	CRYPTO_RSA,      /* Asymmetric RSA driver */
++	CRYPTO_RSA,	 /* Asymmetric RSA driver */
+ 	CRYPTO_MATH,	 /* Mathematical driver */
+-	CRYPTO_CIPHER,   /* Cipher driver */
+-	CRYPTO_ECC,      /* Asymmetric ECC driver */
+-	CRYPTO_DH,       /* Asymmetric DH driver */
++	CRYPTO_CIPHER,	 /* Cipher driver */
++	CRYPTO_ECC,	 /* Asymmetric ECC driver */
++	CRYPTO_DH,	 /* Asymmetric DH driver */
+ 	CRYPTO_DSA,	 /* Asymmetric DSA driver */
+-	CRYPTO_MAX_ALGO  /* Maximum number of algo supported */
++	CRYPTO_MAX_ALGO	 /* Maximum number of algo supported */
+ };
+ 
++/*
++ * Return if the algo provided is valid
++ *
++ * @alg  The algo to test
++ */
++static inline bool is_drvcrypt_algo_id_valid(enum drvcrypt_algo_id alg)
++{
++	return (alg >= CRYPTO_HASH) && (alg < CRYPTO_MAX_ALGO);
++}
++
+ /*
+  * Register the Cryptographic's operation in the table of modules
+  *
+diff --git a/core/drivers/crypto/crypto_api/include/drvcrypt_acipher.h b/core/drivers/crypto/crypto_api/include/drvcrypt_acipher.h
+index fb27a484..4e2eeeeb 100644
+--- a/core/drivers/crypto/crypto_api/include/drvcrypt_acipher.h
++++ b/core/drivers/crypto/crypto_api/include/drvcrypt_acipher.h
+@@ -21,6 +21,12 @@ enum drvcrypt_rsa_id {
+ 	DRVCRYPT_RSASSA_PSS,	   /* RSA Signature Algo mode PSS */
+ };
+ 
++static inline bool is_rsa_id_valid(enum drvcrypt_rsa_id rsa_id)
++{
++	return (rsa_id >= DRVCRYPT_RSA_NOPAD) &&
++	       (rsa_id <= DRVCRYPT_RSASSA_PSS);
++}
++
+ /*
+  * RSA Key object
+  */
+@@ -28,6 +34,7 @@ struct drvcrypt_rsakey {
+ 	void *key;	/* Public or Private key */
+ 	size_t n_size;	/* Size in bytes of the Modulus N */
+ 	bool isprivate; /* True if private key */
++	uint32_t bk_type; /* Type of black key */
+ };
+ 
+ /*
+diff --git a/core/drivers/crypto/crypto_api/include/drvcrypt_cipher.h b/core/drivers/crypto/crypto_api/include/drvcrypt_cipher.h
+index a609b15b..e843c06b 100644
+--- a/core/drivers/crypto/crypto_api/include/drvcrypt_cipher.h
++++ b/core/drivers/crypto/crypto_api/include/drvcrypt_cipher.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2020 NXP
++ * Copyright 2018-2021 NXP
+  *
+  * Cipher interface calling the crypto driver.
+  */
+@@ -9,6 +9,7 @@
+ 
+ #include <crypto/crypto_impl.h>
+ #include <tee_api_types.h>
++#include <drivers/caam/crypto_extension.h>
+ 
+ /*
+  * Cipher operation context
+@@ -25,8 +26,8 @@ struct crypto_cipher {
+ struct drvcrypt_cipher_init {
+ 	void *ctx;		  /* Software context */
+ 	bool encrypt;		  /* Encrypt or decrypt direction */
+-	struct drvcrypt_buf key1; /* First key */
+-	struct drvcrypt_buf key2; /* Second key */
++	struct crypto_key key1;	  /* First key */
++	struct crypto_key key2;	  /* Second key */
+ 	struct drvcrypt_buf iv;	  /* Initial vector */
+ };
+ 
+diff --git a/core/drivers/crypto/sub.mk b/core/drivers/crypto/sub.mk
+index 380f074e..13dcdf77 100644
+--- a/core/drivers/crypto/sub.mk
++++ b/core/drivers/crypto/sub.mk
+@@ -1,4 +1,4 @@
+-global-incdirs-$(CFG_CRYPTO_DRIVER) += crypto_api/include
++global-incdirs-y += crypto_api/include
+ 
+ subdirs-$(CFG_CRYPTO_DRIVER) += crypto_api
+ 
+diff --git a/core/include/crypto/crypto_impl.h b/core/include/crypto/crypto_impl.h
+index ab1f1bed..95c6dfb7 100644
+--- a/core/include/crypto/crypto_impl.h
++++ b/core/include/crypto/crypto_impl.h
+@@ -2,6 +2,7 @@
+ /*
+  * Copyright (c) 2019, Linaro Limited
+  * Copyright (c) 2021, SumUp Services GmbH
++ * Copyright 2021 NXP
+  */
+ 
+ #ifndef __CRYPTO_CRYPTO_IMPL_H
+@@ -9,6 +10,7 @@
+ 
+ #include <crypto/crypto.h>
+ #include <tee_api_types.h>
++#include <drivers/caam/crypto_extension.h>
+ 
+ /*
+  * The crypto context used by the crypto_hash_*() functions is defined by
+@@ -86,7 +88,7 @@ struct crypto_mac_ctx {
+ 
+ struct crypto_mac_ops {
+ 	TEE_Result (*init)(struct crypto_mac_ctx *ctx, const uint8_t *key,
+-			   size_t len);
++			   size_t len, size_t ikey_origin, enum bk_type type);
+ 	TEE_Result (*update)(struct crypto_mac_ctx *ctx, const uint8_t *data,
+ 			     size_t len);
+ 	TEE_Result (*final)(struct crypto_mac_ctx *ctx, uint8_t *digest,
+diff --git a/core/include/drivers/caam/crypto_extension.h b/core/include/drivers/caam/crypto_extension.h
+index 6ee211c8..27ecc297 100644
+--- a/core/include/drivers/caam/crypto_extension.h
++++ b/core/include/drivers/caam/crypto_extension.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2019, 2021 NXP
+  *
+  * Brief   CAAM Cryptographic APIs extension not available thru standard TEE
+  *         Cryptographic APIs.
+@@ -9,6 +9,8 @@
+ #define __CRYPTO_EXTENSTION_H__
+ 
+ #include <tee_api_types.h>
++#include <drvcrypt.h>
++#include <drvcrypt_acipher.h>
+ 
+ /*
+  * Definition of a crypto buffer type
+@@ -69,8 +71,29 @@ struct crypto_sm_page {
+ };
+ #endif /* CFG_CRYPTO_DRV_SM */
+ 
++/**
++ * @brief Key encryption type
++ */
++enum bk_type {
++	PLAIN_TEXT,
++	BK_ECB,	    /* Black key mode - data encrypted in AES ECB */
++	BK_CCM,	    /* Black key mode - data encrypted in AES CCM */
++	BK_MAX_TYPE /* Maximum number of blob type supported */
++};
++
++/**
++ * @brief   Max black key number for an operation
++ */
++#define BK_MAX_KEYS 10
++
++#define PAD_16_BYTE(_key_size)	      (ROUNDUP(_key_size, 16))
++#define ECB_BLACK_KEY_SIZE(_key_size) (PAD_16_BYTE(_key_size))
++#define PAD_8_BYTE(_key_size)	      (ROUNDUP(_key_size, 8))
++#define NONCE_SIZE		      6
++#define IV_SIZE			      6
++#define CCM_OVERHEAD		      (NONCE_SIZE + IV_SIZE)
++#define CCM_BLACK_KEY_SIZE(_key_size) (PAD_8_BYTE(_key_size) + CCM_OVERHEAD)
+ 
+-#ifdef CFG_CRYPTO_DRV_BLOB
+ /*
+  * Blob size padding in bytes
+  */
+@@ -81,15 +104,15 @@ struct crypto_sm_page {
+ /*
+  * Blob Key modifier is 128 bits
+  */
+-#define BLOB_KEY_MODIFIER_BITS	128
++#define BLOB_KEY_MODIFIER_BYTES 16
++#define BLOB_KEY_MODIFIER_BITS	(BLOB_KEY_MODIFIER_BYTES * sizeof(uint8_t))
+ 
+ /*
+  * Blob encryption/decryption type
+  */
+ enum crypto_blob_type {
+-	BLOB_RED = 0,   /* Red Blob mode   - data in plain text */
+-	BLOB_BLACK_ECB, /* Black Blob mode - data encrypted in AES ECB */
+-	BLOB_BLACK_CCM, /* Black Blod mode - data encrypted in AES CCM */
++	BLOB_RED = 0, /* Red Blob mode */
++	BLOB_BLACK,   /* Black Blob mode */
+ };
+ 
+ /*
+@@ -102,12 +125,15 @@ enum crypto_blob_type {
+  *       - payload is the output
+  */
+ struct crypto_blob {
+-	enum crypto_blob_type type;                /* Blob Type */
+-	uint32_t key[BLOB_KEY_MODIFIER_BITS / 32]; /* Blob Key modifier */
++	enum bk_type type; /* black key Type */
++	uint32_t key[BLOB_KEY_MODIFIER_BITS /
++		     sizeof(uint32_t)];		   /* Blob Key modifier */
+ 	struct cryptobuf payload;                  /* Payload */
+ 	struct cryptobuf blob;                     /* Blob */
+ };
+ 
++#ifdef CFG_CRYPTO_DRV_BLOB
++
+ #ifdef CFG_CRYPTO_DRV_SM
+ /*
+  * Blob encapsulation using CAAM Secure Memory.
+@@ -119,4 +145,10 @@ TEE_Result caam_blob_sm_encapsulate(struct crypto_blob *blob,
+ #endif /* CFG_CRYPTO_DRV_SM */
+ #endif /* CFG_CRYPTO_DRV_BLOB */
+ 
++struct crypto_key {
++	enum bk_type type;
++	size_t size;
++	struct cryptobuf buf;
++};
++
+ #endif /* __CRYPTO_EXTENSTION_H__ */
+diff --git a/core/lib/libtomcrypt/cmac.c b/core/lib/libtomcrypt/cmac.c
+index e8cad3c9..46db17a6 100644
+--- a/core/lib/libtomcrypt/cmac.c
++++ b/core/lib/libtomcrypt/cmac.c
+@@ -2,6 +2,7 @@
+ /*
+  * Copyright (c) 2014-2019, Linaro Limited
+  * Copyright (c) 2021, SumUp Services GmbH
++ * Copyright 2021 NXP
+  */
+ 
+ #include <assert.h>
+@@ -30,7 +31,8 @@ static struct ltc_omac_ctx *to_omac_ctx(struct crypto_mac_ctx *ctx)
+ }
+ 
+ static TEE_Result ltc_omac_init(struct crypto_mac_ctx *ctx, const uint8_t *key,
+-				size_t len)
++				size_t len, size_t ikey_origin __unused,
++				enum bk_type type __unused)
+ {
+ 	struct ltc_omac_ctx *hc = to_omac_ctx(ctx);
+ 
+diff --git a/core/lib/libtomcrypt/hmac.c b/core/lib/libtomcrypt/hmac.c
+index 1e7d3a8a..1c3580fe 100644
+--- a/core/lib/libtomcrypt/hmac.c
++++ b/core/lib/libtomcrypt/hmac.c
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+  * Copyright (c) 2014-2019, Linaro Limited
++ * Copyright 2021 NXP
+  */
+ 
+ #include <assert.h>
+@@ -29,7 +30,8 @@ static struct ltc_hmac_ctx *to_hmac_ctx(struct crypto_mac_ctx *ctx)
+ }
+ 
+ static TEE_Result ltc_hmac_init(struct crypto_mac_ctx *ctx, const uint8_t *key,
+-				size_t len)
++				size_t len, size_t ikey_origin __unused,
++				enum bk_type type __unused)
+ {
+ 	struct ltc_hmac_ctx *hc = to_hmac_ctx(ctx);
+ 
+-- 
+2.35.1
+
+
+From 2077e194d7069b3490dd1e579360247e7c19aee7 Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Tue, 23 Nov 2021 17:28:09 +0100
+Subject: [PATCH 2/8] LFOPTEE-63 core: driver: crypto: Add black keys and blobs
+ implementation
+
+This patch add modules to create black keys and blob using the
+crypto API.
+
+Signed-off-by: Marouene Boubakri <marouene.boubakri@nxp.com>
+Signed-off-by: Clement Faure <clement.faure@nxp.com>
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk         |   3 +
+ core/drivers/crypto/caam/bk/caam_bk.c         | 435 ++++++++++++++++++
+ core/drivers/crypto/caam/bk/sub.mk            |   3 +
+ core/drivers/crypto/caam/blob/caam_blob.c     | 230 +++++++++
+ core/drivers/crypto/caam/caam_ctrl.c          |  17 +
+ core/drivers/crypto/caam/include/caam_bk.h    |  33 ++
+ core/drivers/crypto/caam/include/caam_blob.h  |   7 +
+ core/drivers/crypto/caam/sub.mk               |   1 +
+ core/drivers/crypto/crypto_api/bk/bk.c        | 217 +++++++++
+ core/drivers/crypto/crypto_api/bk/blob.c      | 188 ++++++++
+ core/drivers/crypto/crypto_api/bk/sub.mk      |   2 +
+ .../crypto/crypto_api/include/drvcrypt.h      |   2 +
+ .../crypto/crypto_api/include/drvcrypt_bk.h   |  66 +++
+ .../crypto/crypto_api/include/drvcrypt_blob.h |  36 ++
+ core/drivers/crypto/crypto_api/sub.mk         |   1 +
+ core/include/drivers/caam/crypto_extension.h  |  96 ++++
+ 16 files changed, 1337 insertions(+)
+ create mode 100644 core/drivers/crypto/caam/bk/caam_bk.c
+ create mode 100644 core/drivers/crypto/caam/bk/sub.mk
+ create mode 100644 core/drivers/crypto/caam/include/caam_bk.h
+ create mode 100644 core/drivers/crypto/crypto_api/bk/bk.c
+ create mode 100644 core/drivers/crypto/crypto_api/bk/blob.c
+ create mode 100644 core/drivers/crypto/crypto_api/bk/sub.mk
+ create mode 100644 core/drivers/crypto/crypto_api/include/drvcrypt_bk.h
+ create mode 100644 core/drivers/crypto/crypto_api/include/drvcrypt_blob.h
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index bbb139c9..605a970a 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -26,6 +26,7 @@
+ # DBG_DSA    BIT32(14) // DSA trace
+ # DBG_MP     BIT32(15) // MP trace
+ # DBG_SM     BIT32(16) // SM trace
++
+ CFG_DBG_CAAM_TRACE ?= 0x2
+ CFG_DBG_CAAM_DESC ?= 0x0
+ CFG_DBG_CAAM_BUF ?= 0x0
+@@ -100,6 +101,7 @@ endif
+ ifneq ($(filter y, $(CFG_MX8QM) $(CFG_MX8QX) $(CFG_MX8DXL)), y)
+ $(call force, CFG_CAAM_JR_DISABLE_NODE,y)
+ endif
++
+ #
+ # Configuration of the Crypto Driver
+ #
+@@ -143,6 +145,7 @@ $(call force, CFG_NXP_CAAM_CMAC_DRV, y)
+ $(call force, CFG_NXP_CAAM_HMAC_DRV, y)
+ $(eval $(call cryphw-enable-drv-hw, SM))
+ $(eval $(call cryphw-enable-drv-hw, BLOB))
++$(eval $(call cryphw-enable-drv-hw, BK))
+ 
+ ifneq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) \
+ 	$(CFG_MX6S) $(CFG_MX6SL) $(CFG_MX6SLL) $(CFG_MX6SX) $(CFG_MX7ULP) $(CFG_MX8ULP)), y)
+diff --git a/core/drivers/crypto/caam/bk/caam_bk.c b/core/drivers/crypto/caam/bk/caam_bk.c
+new file mode 100644
+index 00000000..3f518ac6
+--- /dev/null
++++ b/core/drivers/crypto/caam/bk/caam_bk.c
+@@ -0,0 +1,435 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019, 2021 NXP
++ *
++ * @file    caam_bk.c
++ *
++ * @brief   CAAM Black key manager.\n
++ *          Implementation of Black key functions
++ */
++/* Standard includes */
++#include <string.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/* Global includes */
++#include <mm/core_memprot.h>
++#include <tee/cache.h>
++#include <utee_defines.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Platform includes */
++#include <imx.h>
++
++/* Library i.MX includes */
++#include <drvcrypt.h>
++#include <drvcrypt_bk.h>
++#include <drvcrypt_acipher.h>
++
++/* Local includes */
++#include <caam_common.h>
++#include <caam_bk.h>
++
++/* Utils includes */
++#include <caam_utils_mem.h>
++
++/*
++ * Debug Macros
++ */
++#define BK_DEBUG
++#ifdef BK_DEBUG
++#define BK_TRACE DRV_TRACE
++#else
++#define BK_TRACE(...)
++#endif
++
++#define DUMP_DESC
++#ifdef DUMP_DESC
++#define BK_DUMPDESC(desc) \
++	{ \
++		BK_TRACE("BK Descriptor"); \
++		DRV_DUMPDESC(desc); \
++	}
++#else
++#define BK_DUMPDESC(desc)
++#endif
++
++#define DUMP_BUF
++#ifdef DUMP_BUF
++#define BK_DUMPBUF DRV_DUMPBUF
++#else
++#define BK_DUMPBUF(...)
++#endif
++
++#define BK_OPERATE_DESC_ENTRIES 5
++
++/**
++ * @brief
++ * Build RSA private key encapsulation job descriptor.
++ *
++ * Load key to class 1 key register.
++ * The PKHA E Size Register is automatically written by the KEY Command.
++ * Write back out via FIFO store.
++ *
++ * @desc Pointer to job descriptor buffer
++ * @type     type of the key
++ * @src   caamdmaobj of the key to encapsulate
++ * @dst  caamdmaobj of the encapsulated key
++ * @pk_size   Original size of the key
++ */
++static void build_rsa_encap_jobdesc(uint32_t *desc, enum bk_type type,
++				    struct caamdmaobj *src,
++				    struct caamdmaobj *dst, size_t pk_size)
++{
++	uint32_t fifo_store_op = (dst->sgtbuf.sgt_type) ? CMD_SGT : 0;
++
++	caam_desc_init(desc);
++	caam_desc_add_word(desc, DESC_HEADER(0));
++
++	/* Load the key */
++	caam_desc_add_dmaobj(desc, src,
++			     CMD_KEY_TYPE | CMD_CLASS(CLASS_1) |
++				     KEY_DEST(PKHA_E));
++
++	/* ...and write back out via FIFO store */
++	if (type == BK_ECB)
++		fifo_store_op |= FIFO_ST(PKHA_E_AES_ECB_JKEK, pk_size);
++	else
++		fifo_store_op |= FIFO_ST(PKHA_E_AES_CCM_JKEK, pk_size);
++
++	caam_desc_add_word(desc, fifo_store_op);
++	caam_desc_add_ptr(desc, dst->sgtbuf.paddr);
++}
++
++/**
++ * @brief
++ * Build Cipher key encapsulation job descriptor.
++ *
++ * Load key to class 1 key register.
++ * Write back out via FIFO store.
++ *
++ * @desc Pointer to job descriptor buffer
++ * @type     type of the key
++ * @src   caamdmaobj of the key to encapsulate
++ * @dst  caamdmaobj of the encapsulated key
++ * @pk_size   Original size of the key
++ */
++static void build_cipher_encap_jobdesc(uint32_t *desc, enum bk_type type,
++				       struct caamdmaobj *src,
++				       struct caamdmaobj *dst, size_t pk_size)
++{
++	uint32_t fifo_store_op = MOVE_AUX(CLASS_1) |
++				 ((dst->sgtbuf.sgt_type) ? CMD_SGT : 0);
++
++	caam_desc_init(desc);
++	caam_desc_add_word(desc, DESC_HEADER(0));
++
++	/* Load the key */
++	caam_desc_add_dmaobj(desc, src,
++			     CMD_KEY_TYPE | CMD_CLASS(CLASS_1) | KEY_DEST(REG));
++
++	/* ...and write back out via FIFO store */
++	if (type == BK_ECB)
++		fifo_store_op |= FIFO_ST(KEY_AES_ECB_JKEK, pk_size);
++	else
++		fifo_store_op |= FIFO_ST(KEY_AES_CCM_JKEK, pk_size);
++
++	caam_desc_add_word(desc, fifo_store_op);
++	caam_desc_add_ptr(desc, dst->sgtbuf.paddr);
++}
++
++/**
++ * @brief   CAAM driver does not implement free_keypair function.
++ *			Manually free key.
++ *
++ * @param[in]  key    key-pair structure to free
++ *
++ */
++static void free_rsa_key(struct rsa_keypair *key)
++{
++	if (key) {
++		crypto_bignum_free(key->e);
++		crypto_bignum_free(key->d);
++		crypto_bignum_free(key->n);
++		crypto_bignum_free(key->p);
++		crypto_bignum_free(key->q);
++		crypto_bignum_free(key->dp);
++		crypto_bignum_free(key->dq);
++		crypto_bignum_free(key->qp);
++		free(key);
++	}
++}
++
++/**
++ * @brief
++ * Encapsulates input plain key to black a key.
++ *
++ * When using AES-ECB encryption, data is a multiple of 16 bytes long.
++ * If the Private exponent is a multiple of 128-bit, then the AES-ECB
++ * encrypted key would fit in the same buffer as the original plain key.
++ * So if the plain key is not a multiple of 16 bytes long,
++ * then it is padded before being encrypted.
++ * A CCM-encrypted black key is always at least 12 bytes longer
++ * than the encapsulated key.
++ *
++ * @param[in/out] bk_key    Black key data to encapsulate
++ *
++ * @retval TEE_SUCCESS               Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY   Not enough memory
++ * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
++ * @retval TEE_ERROR_GENERIC         Any other error
++ */
++static TEE_Result do_encapsulate(struct drvcrypt_bk_key *bk_key)
++{
++	TEE_Result ret = TEE_ERROR_GENERIC;
++	size_t bk_size, pk_size;
++	enum caam_status retstatus = CAAM_FAILURE;
++
++	struct caam_jobctx jobctx = { 0 };
++	uint32_t *desc = 0;
++
++	struct caamdmaobj src = { 0 };
++	struct caamdmaobj dst = { 0 };
++
++	/* Check input parameters */
++	if (!bk_key) {
++		BK_TRACE("Input is NULL");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (bk_key->type >= BK_MAX_TYPE) {
++		BK_TRACE("Invalid black key type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Allocate the job used to prepare the operation */
++	desc = caam_calloc_desc(BK_OPERATE_DESC_ENTRIES);
++	if (!desc) {
++		BK_TRACE("Could not allocate memory for descriptor");
++		return TEE_ERROR_OUT_OF_MEMORY;
++	}
++
++	/* Key size */
++	pk_size = bk_key->pk.length;
++
++	/* Compute output black key size */
++	if (bk_key->type == BK_CCM)
++		bk_size = CCM_BLACK_KEY_SIZE(pk_size);
++	else
++		bk_size = ECB_BLACK_KEY_SIZE(pk_size);
++
++	if (bk_key->bk.length < bk_size) {
++		ret = TEE_ERROR_SHORT_BUFFER;
++		bk_key->bk.length = bk_size;
++		goto exit_operate;
++	}
++
++	ret = caam_dmaobj_input_sgtbuf(&src, bk_key->pk.data, pk_size);
++	if (ret) {
++		EMSG("Failed to allocate input dmaobj");
++		goto exit_operate;
++	}
++
++	BK_DUMPBUF("Input", bk_key->pk.data, bk_key->pk.length);
++
++	ret = caam_dmaobj_output_sgtbuf(&dst, bk_key->bk.data,
++					bk_key->bk.length, bk_size);
++	if (ret) {
++		EMSG("Failed to allocate output dmaobj");
++		goto exit_operate;
++	}
++
++	switch (bk_key->alg) {
++	case CRYPTO_RSA:
++		build_rsa_encap_jobdesc(desc, bk_key->type, &src, &dst,
++					pk_size);
++		break;
++	case CRYPTO_CIPHER:
++		build_cipher_encap_jobdesc(desc, bk_key->type, &src, &dst,
++					   pk_size);
++		break;
++	default:
++		BK_TRACE("Algo not supported CAAM BK");
++		ret = TEE_ERROR_NOT_SUPPORTED;
++		goto exit_operate;
++	}
++
++	jobctx.desc = desc;
++	BK_DUMPDESC(desc);
++
++	caam_dmaobj_cache_push(&src);
++	caam_dmaobj_cache_push(&dst);
++
++	/* Enqueue the job descriptor */
++	retstatus = caam_jr_enqueue(&jobctx, NULL);
++	if (retstatus == CAAM_NO_ERROR) {
++		caam_dmaobj_copy_to_orig(&dst);
++		BK_TRACE("Done CAAM BK");
++
++		ret = TEE_SUCCESS;
++		bk_key->bk.length = bk_size;
++		BK_DUMPBUF("Output", bk_key->bk.data, bk_key->bk.length);
++	} else {
++		BK_TRACE("CAAM Status 0x%08" PRIx32 "", jobctx.status);
++		ret = TEE_ERROR_GENERIC;
++		goto exit_operate;
++	}
++
++exit_operate:
++	caam_dmaobj_free(&src);
++	caam_dmaobj_free(&dst);
++
++	caam_free_desc(&desc);
++	return ret;
++}
++
++/*
++ * Number of component of a key necessary to sign:
++ * - modulus
++ * - private key
++ */
++#define SIGN_NB_COMP_MODULUS_PRIVKEY 2
++
++/**
++ * @brief
++ * RSA Sign data using a black key.
++ *
++ * @param[in/out] bk_data    Structure holding details for signature(decrypt)
++ *
++ * @retval TEE_SUCCESS               Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY   Not enough memory
++ * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
++ * @retval TEE_ERROR_GENERIC         Any other error
++ */
++static TEE_Result do_rsa_sign(struct drvcrypt_bk_data *bk_data)
++{
++	TEE_Result res = TEE_ERROR_GENERIC;
++
++	struct drvcrypt_rsa *rsa = NULL;
++	struct rsa_keypair *key = NULL;
++	struct drvcrypt_rsa_ed rsa_data = { 0 };
++	size_t rsa_key_bit_size = 0;
++
++	/* Check if RSA is available */
++	rsa = drvcrypt_get_ops(CRYPTO_RSA);
++	if (!rsa) {
++		BK_TRACE("CAAM RSA not implemented or not enabled");
++		res = TEE_ERROR_NOT_IMPLEMENTED;
++		goto out;
++	}
++
++	/* Check input key */
++	if (bk_data->key_sz < SIGN_NB_COMP_MODULUS_PRIVKEY) {
++		BK_TRACE("Invalid RSA key");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	/* Allocate Key */
++	key = malloc(sizeof(struct rsa_keypair));
++	if (!key) {
++		BK_TRACE("Error allocating RSA key pair");
++		res = TEE_ERROR_OUT_OF_MEMORY;
++		goto out;
++	}
++
++	/* Allocate RSA Key pair */
++	rsa_key_bit_size = bk_data->key[1].length * 8;
++	res = rsa->alloc_keypair(key, rsa_key_bit_size);
++	if (res != TEE_SUCCESS) {
++		BK_TRACE("Error allocating RSA key pair");
++		res = TEE_ERROR_OUT_OF_MEMORY;
++		goto out;
++	}
++
++	/* Set private exponent */
++	if (crypto_bignum_bin2bn(bk_data->key[0].data, bk_data->key[0].length,
++				 key->d) != TEE_SUCCESS) {
++		BK_TRACE("Error setting private exponent");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	/* Set public modulus */
++	if (crypto_bignum_bin2bn(bk_data->key[1].data, bk_data->key[1].length,
++				 key->n) != TEE_SUCCESS) {
++		BK_TRACE("Error setting public modulus");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	/* Setup RSA parameters */
++	rsa_data.key.key = key;
++	rsa_data.key.isprivate = true;
++	rsa_data.key.n_size = bk_data->key[1].length;
++	rsa_data.key.bk_type = bk_data->type;
++	rsa_data.rsa_id = bk_data->rsa_id;
++	rsa_data.message.data = bk_data->dst.data;
++	rsa_data.message.length = bk_data->dst.length;
++	rsa_data.cipher.data = bk_data->src.data;
++	rsa_data.cipher.length = bk_data->src.length;
++
++	/* RSA private decrypt (sign) */
++	res = rsa->decrypt(&rsa_data);
++	if (res != TEE_SUCCESS) {
++		BK_TRACE("Error signing using CAAM black key");
++		res = TEE_ERROR_GENERIC;
++		goto out;
++	}
++
++	/* Update the out signature size */
++	bk_data->dst.length = rsa_data.message.length;
++
++out:
++	free_rsa_key(key);
++	return res;
++}
++
++/**
++ * @brief
++ * Sign data using a black key.
++ *
++ * @param[in/out] bk_data    Data to decrypt using black key
++ *
++ * @retval TEE_SUCCESS               Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY   Not enough memory
++ * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
++ * @retval TEE_ERROR_GENERIC         Any other error
++ */
++static TEE_Result do_sign(struct drvcrypt_bk_data *bk_data)
++{
++	/* Check if the algorithm with black key is supported */
++	if (bk_data->alg == CRYPTO_RSA)
++		return do_rsa_sign(bk_data);
++
++	BK_TRACE("Algorithm with black key not supported ");
++	return TEE_ERROR_NOT_IMPLEMENTED;
++}
++
++/**
++ * @brief   Registration of the Black key Driver
++ */
++struct drvcrypt_bk driver_bk = { .encapsulate = &do_encapsulate,
++				 .sign = &do_sign };
++
++/**
++ * @brief   Initialize the Black key module
++ *
++ * @param[in] ctrl_addr   Controller base address
++ *
++ * @retval  CAAM_NO_ERROR    Success
++ * @retval  CAAM_FAILURE     An error occurred
++ */
++enum caam_status caam_bk_init(vaddr_t ctrl_addr __unused)
++{
++	enum caam_status retstatus = CAAM_FAILURE;
++
++	/* Register the BK Driver */
++	if (drvcrypt_register(CRYPTO_BK, &driver_bk) == 0)
++		retstatus = CAAM_NO_ERROR;
++
++	return retstatus;
++}
+diff --git a/core/drivers/crypto/caam/bk/sub.mk b/core/drivers/crypto/caam/bk/sub.mk
+new file mode 100644
+index 00000000..44770be6
+--- /dev/null
++++ b/core/drivers/crypto/caam/bk/sub.mk
+@@ -0,0 +1,3 @@
++srcs-$(CFG_NXP_CAAM_BK_DRV) += caam_bk.c
++
++incdirs-y += ../include
+diff --git a/core/drivers/crypto/caam/blob/caam_blob.c b/core/drivers/crypto/caam/blob/caam_blob.c
+index 5898e402..ad21591a 100644
+--- a/core/drivers/crypto/caam/blob/caam_blob.c
++++ b/core/drivers/crypto/caam/blob/caam_blob.c
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+  * Copyright 2020 Pengutronix, Rouven Czerwinski <entwicklung@pengutronix.de>
++ * Copyright 2021 NXP
+  */
+ 
+ #include <caam_blob.h>
+@@ -14,6 +15,7 @@
+ #include <stdint.h>
+ #include <string.h>
+ #include <tee/cache.h>
++#include <drvcrypt_blob.h>
+ 
+ #define MKVB_SIZE	32
+ 
+@@ -80,3 +82,231 @@ TEE_Result tee_otp_get_hw_unique_key(struct tee_hw_unique_key *hwkey)
+ 	memcpy(&hwkey->data, &stored_key, sizeof(hwkey->data));
+ 	return TEE_SUCCESS;
+ }
++
++/**
++ * @brief
++ *   - Encapsulates input data to RED blob or BLACK blob.\n
++ *   - Decapsulates the input blob to provide the encapsulated data.\n
++ *   \n
++ *   If resulting blob is black, the data must be black as well.\n
++ *   If resulting blob is red, the data are plain text.\n
++ *   \n
++ *   Output data length is:\n
++ *      - encapsulation = inLen + BLOB_PAD_SIZE\n
++ *      - decapsulation = inLen - BLOB_PAD_SIZE\n
++ *   \n
++ * @param[in/out] blob_data    Blob data to encapsulate/decapsulate
++ *
++ * @retval TEE_SUCCESS               Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY   Not enough memory
++ * @retval TEE_ERROR_BAD_PARAMETERS  Bad parameters
++ * @retval TEE_ERROR_GENERIC         Any other error
++ */
++static TEE_Result do_operate(struct drvcrypt_blob_data *blob_data)
++{
++#define BLOB_OPERATE_DESC_ENTRIES 9
++
++	TEE_Result ret = TEE_ERROR_GENERIC;
++	enum caam_status retstatus = CAAM_FAILURE;
++
++	struct caam_jobctx jobctx = { 0 };
++	uint32_t *desc = NULL;
++
++	paddr_t paddr_input = 0;
++	paddr_t paddr_key = 0;
++
++	struct caambuf out_buf = { 0 };
++	struct cryptobuf *input = NULL;
++	struct cryptobuf *output = NULL;
++	size_t insize = 0;
++	size_t outsize = 0;
++
++	uint32_t opflag = 0;
++	int retS = 0;
++	uint8_t desclen = 1;
++
++	BLOB_TRACE("Key %s - Type %d(%ld) - Payload %ld bytes - Blob %ld bytes",
++		   (blob_data->encaps) ? "Encaps" : "Decaps", blob_data->type,
++		   blob_data->pk_size, blob_data->payload.length,
++		   blob_data->blob.length);
++
++	paddr_key = virt_to_phys(blob_data->key.data);
++	if (!paddr_key) {
++		BLOB_TRACE("Fail to get physical address of key modifier");
++		goto exit_operate;
++	}
++
++	if (blob_data->encaps) {
++		input = &blob_data->payload;
++		output = &blob_data->blob;
++
++		opflag |= BLOB_ENCAPS;
++	} else {
++		input = &blob_data->blob;
++		output = &blob_data->payload;
++
++		opflag |= BLOB_DECAPS;
++
++		insize = input->length;
++		outsize = input->length - BLOB_PAD_SIZE;
++		blob_data->pk_size = outsize;
++	}
++
++	switch (blob_data->type) {
++	case BK_CCM:
++		opflag |= PROT_BLOB_TYPE_BLACK_KEY | PROT_BLOB_INFO(CCM);
++		/*
++		 * Round up the size of buffer to clean/flush real buffer
++		 * which contains more data
++		 */
++		if (blob_data->encaps)
++			insize = blob_data->pk_size;
++		else
++			output->length = BLACK_KEY_CCM_SIZE(outsize);
++
++		break;
++
++	case BK_ECB:
++		opflag |= PROT_BLOB_TYPE_BLACK_KEY | PROT_BLOB_INFO(ECB);
++		/*
++		 * Round up the size of buffer to clean/flush real buffer
++		 * which contains more data
++		 */
++		if (blob_data->encaps)
++			insize = blob_data->pk_size;
++		else
++			output->length = BLACK_KEY_ECB_SIZE(outsize);
++
++		break;
++
++	case PLAIN_TEXT:
++		if (blob_data->encaps)
++			insize = input->length;
++		else
++			output->length = outsize;
++
++		break;
++
++	default:
++		ret = TEE_ERROR_BAD_PARAMETERS;
++		goto exit_operate;
++	}
++
++	if (blob_data->encaps) {
++		outsize = insize + BLOB_PAD_SIZE;
++		output->length = outsize;
++	}
++
++	BLOB_TRACE("payload %p(%ld)[real %ld] %s blob(%d) %p(%ld)",
++		   blob_data->payload.data, blob_data->payload.length,
++		   blob_data->pk_size, (blob_data->encaps) ? "->" : "<-",
++		   blob_data->type, blob_data->blob.data,
++		   blob_data->blob.length);
++
++	paddr_input = virt_to_phys(input->data);
++	if (!paddr_input) {
++		BLOB_TRACE("Fail to get physical address of input buffer");
++		goto exit_operate;
++	}
++
++	retS = caam_calloc_align_buf(&out_buf, output->length);
++	if (retS != CAAM_NO_ERROR) {
++		BLOB_TRACE("Fail to realloc output buffer");
++		ret = TEE_ERROR_OUT_OF_MEMORY;
++		goto exit_operate;
++	}
++
++	/* Allocate the descriptor */
++	desc = caam_calloc_desc(BLOB_OPERATE_DESC_ENTRIES);
++	if (!desc) {
++		BLOB_TRACE("CAAM Context Descriptor Allocation error");
++		ret = TEE_ERROR_OUT_OF_MEMORY;
++		goto exit_operate;
++	}
++
++	/*
++	 * Create the Blob encapsulation/decapsulation descriptor
++	 */
++	/* Load the key modifier */
++	desc[desclen++] = LD_NOIMM(CLASS_2, REG_KEY, blob_data->key.length);
++	desc[desclen++] = paddr_key;
++
++	/* Define the Input data sequence */
++	desc[desclen++] = SEQ_IN_PTR(insize);
++	desc[desclen++] = paddr_input;
++
++	/* Define the Output data sequence */
++	desc[desclen++] = SEQ_OUT_PTR(outsize);
++	desc[desclen++] = out_buf.paddr;
++
++	/* Define the encapsulation operation */
++	desc[desclen++] = opflag;
++
++	/* Set the descriptor Header with length and index */
++	desc[0] = DESC_HEADER(desclen);
++
++	BLOB_DUMPDESC(desc);
++
++	cache_operation(TEE_CACHECLEAN, blob_data->key.data,
++			blob_data->key.length);
++
++	cache_operation(TEE_CACHECLEAN, input->data, input->length);
++
++	if (out_buf.nocache == 0)
++		cache_operation(TEE_CACHEFLUSH, out_buf.data, out_buf.length);
++
++	jobctx.desc = desc;
++	retstatus = caam_jr_enqueue(&jobctx, NULL);
++
++	if (retstatus == CAAM_NO_ERROR) {
++		BLOB_TRACE("Done CAAM BLOB %s",
++			   blob_data->encaps ? "Encaps" : "Decaps");
++
++		if (out_buf.nocache == 0)
++			cache_operation(TEE_CACHEINVALIDATE, out_buf.data,
++					out_buf.length);
++
++		memcpy(output->data, out_buf.data, out_buf.length);
++
++		ret = TEE_SUCCESS;
++	} else {
++		BLOB_TRACE("CAAM Status 0x%08" PRIx32 "", jobctx.status);
++		ret = TEE_ERROR_GENERIC;
++	}
++
++	BLOB_TRACE("Done CAAM BLOB %s outbuf: %p(%ld)",
++		   blob_data->encaps ? "Encaps" : "Decaps", output->data,
++		   output->length);
++
++exit_operate:
++	caam_free_buf(&out_buf);
++
++	caam_free_desc(&desc);
++	return ret;
++}
++
++/**
++ * @brief   Registration of the Blob Driver
++ */
++struct drvcrypt_blob driver_blob = {
++	.operate = &do_operate,
++};
++
++/**
++ * @brief   Initialize the Blob module
++ *
++ * @param[in] ctrl_addr   Controller base address
++ *
++ * @retval  CAAM_NO_ERROR    Success
++ * @retval  CAAM_FAILURE     An error occurred
++ */
++enum caam_status caam_blob_init(vaddr_t baseaddr __unused)
++{
++	enum caam_status retstatus = CAAM_FAILURE;
++
++	/* Register the BLOB Driver */
++	if (drvcrypt_register(CRYPTO_BLOB, &driver_blob) == 0)
++		retstatus = CAAM_NO_ERROR;
++
++	return retstatus;
++}
+diff --git a/core/drivers/crypto/caam/caam_ctrl.c b/core/drivers/crypto/caam/caam_ctrl.c
+index 81fc8ee6..1258a0df 100644
+--- a/core/drivers/crypto/caam/caam_ctrl.c
++++ b/core/drivers/crypto/caam/caam_ctrl.c
+@@ -12,11 +12,13 @@
+ #include <caam_hal_ctrl.h>
+ #include <caam_hash.h>
+ #include <caam_jr.h>
++#include <caam_bk.h>
+ #include <caam_blob.h>
+ #include <caam_mp.h>
+ #include <caam_pwr.h>
+ #include <caam_rng.h>
+ #include <caam_sm.h>
++#include <caam_bk.h>
+ #include <caam_utils_mem.h>
+ #include <initcall.h>
+ #include <kernel/panic.h>
+@@ -114,6 +116,13 @@ static TEE_Result crypto_driver_init(void)
+ 		goto exit_init;
+ 	}
+ 
++	retstatus = caam_blob_init(jrcfg.base);
++	if (retstatus != CAAM_NO_ERROR) {
++		EMSG("caam_blob_init() (%d)", retstatus);
++		retresult = TEE_ERROR_GENERIC;
++		goto exit_init;
++	}
++
+ 	/* Initialize the CMAC Module */
+ 	retstatus = caam_cmac_init(jrcfg.base);
+ 	if (retstatus != CAAM_NO_ERROR) {
+@@ -154,6 +163,14 @@ static TEE_Result crypto_driver_init(void)
+ 		goto exit_init;
+ 	}
+ 
++	/* Initialize the black key Module */
++	retstatus = caam_bk_init(jrcfg.base);
++	if (retstatus != CAAM_NO_ERROR && retstatus != CAAM_NOT_SUPPORTED) {
++		EMSG("caam_bk_init() (%d)", retstatus);
++		retresult = TEE_ERROR_GENERIC;
++		goto exit_init;
++	}
++
+ 	/* Everything is OK, register the Power Management handler */
+ 	caam_pwr_init();
+ 
+diff --git a/core/drivers/crypto/caam/include/caam_bk.h b/core/drivers/crypto/caam/include/caam_bk.h
+new file mode 100644
+index 00000000..186ceb7b
+--- /dev/null
++++ b/core/drivers/crypto/caam/include/caam_bk.h
+@@ -0,0 +1,33 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019, 2021 NXP
++ *
++ * @file    caam_bk.h
++ *
++ * @brief   CAAM Black key header
++ */
++#ifndef __CAAM_BK_H__
++#define __CAAM_BK_H__
++
++/* Global includes */
++#include <caam_common.h>
++#include <tee_api_types.h>
++
++#ifdef CFG_NXP_CAAM_BK_DRV
++/**
++ * @brief   Initialize the Black key module
++ *
++ * @param[in] ctrl_addr   Controller base address
++ *
++ * @retval  CAAM_NO_ERROR    Success
++ * @retval  CAAM_FAILURE     An error occurred
++ */
++enum caam_status caam_bk_init(vaddr_t ctrl_addr);
++#else
++static inline enum caam_status caam_bk_init(vaddr_t ctrl_addr __unused)
++{
++	return CAAM_NO_ERROR;
++}
++#endif
++
++#endif /* __CAAM_BK_H__ */
+diff --git a/core/drivers/crypto/caam/include/caam_blob.h b/core/drivers/crypto/caam/include/caam_blob.h
+index 768cdaa8..8d4b7b17 100644
+--- a/core/drivers/crypto/caam/include/caam_blob.h
++++ b/core/drivers/crypto/caam/include/caam_blob.h
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+  * Copyright 2020 Pengutronix, Rouven Czerwinski <entwicklung@pengutronix.de>
++ * Copyright 2021 NXP
+  */
+ #ifndef __CAAM_BLOB_H__
+ #define __CAAM_BLOB_H__
+@@ -14,11 +15,17 @@
+  * @ctrl_addr   Controller base address
+  */
+ enum caam_status caam_blob_mkvb_init(vaddr_t baseaddr);
++enum caam_status caam_blob_init(vaddr_t baseaddr);
+ #else
+ static inline enum caam_status caam_blob_mkvb_init(vaddr_t baseaddr __unused)
+ {
+ 	return CAAM_NO_ERROR;
+ }
++
++static inline enum caam_status caam_blob_init(vaddr_t baseaddr __unused);
++{
++	return CAAM_NO_ERROR;
++}
+ #endif /* CFG_NXP_CAAM_BLOB_DRV */
+ 
+ #endif /* __CAAM_BLOB_H__ */
+diff --git a/core/drivers/crypto/caam/sub.mk b/core/drivers/crypto/caam/sub.mk
+index ac5b8d98..73018da9 100644
+--- a/core/drivers/crypto/caam/sub.mk
++++ b/core/drivers/crypto/caam/sub.mk
+@@ -14,3 +14,4 @@ subdirs-$(CFG_NXP_CAAM_ACIPHER_DRV) += acipher
+ subdirs-$(CFG_NXP_CAAM_BLOB_DRV) += blob
+ subdirs-$(CFG_NXP_CAAM_MP_DRV) += mp
+ subdirs-$(CFG_NXP_CAAM_SM_DRV) += sm
++subdirs-$(CFG_NXP_CAAM_BK_DRV) += bk
+diff --git a/core/drivers/crypto/crypto_api/bk/bk.c b/core/drivers/crypto/crypto_api/bk/bk.c
+new file mode 100644
+index 00000000..c0c43ba2
+--- /dev/null
++++ b/core/drivers/crypto/crypto_api/bk/bk.c
+@@ -0,0 +1,217 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019 NXP
++ * @Copyright 2021 NXP
++ *
++ * @file    bk.c
++ *
++ * @brief   Cryptographic library using the NXP CAAM driver.\n
++ *          Black key crypto_* interface implementation.
++ */
++
++/* Global includes */
++#include <crypto/crypto.h>
++#include <trace.h>
++
++/* Library includes */
++#include <drvcrypt_bk.h>
++
++#define LIB_DEBUG
++#ifdef LIB_DEBUG
++#define LIB_TRACE EMSG
++#else
++#define LIB_TRACE(...)
++#endif
++
++/**
++ * @brief Encapsulates a plain key.
++ *
++ * @param[in] alg    CAAM cryptographic algorithm id
++ * @param[in] type   Encapsulation type
++ * @param[in] pk     Plain key to encapsulate
++ * @param[in] bk     Output black key
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result bk_encapsulate(enum drvcrypt_algo_id alg, enum bk_type type,
++			  const struct cryptobuf *pk, struct cryptobuf *bk)
++{
++	TEE_Result ret;
++	struct drvcrypt_bk_key bk_key = { 0 };
++	struct drvcrypt_bk *bkdrv = NULL;
++
++	bkdrv = drvcrypt_get_ops(CRYPTO_BK);
++	if (!bkdrv) {
++		LIB_TRACE("Black key is not supported");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	/* Check input parameters */
++	if (!pk || !bk) {
++		LIB_TRACE("One of the input data is not defined");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check plain key data is defined */
++	if (!pk->data) {
++		LIB_TRACE("Plain key buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check black key data */
++	if (!bk->data) {
++		LIB_TRACE("BK buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check BK Type */
++	if (type >= BK_MAX_TYPE) {
++		LIB_TRACE("BK type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check Algorithm Id */
++	if (alg >= CRYPTO_MAX_ALGO) {
++		LIB_TRACE("Algo type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check black key buffer size if type = ECB */
++	if (type == BK_ECB && bk->length < ECB_BLACK_KEY_SIZE(pk->length)) {
++		LIB_TRACE("BK length too short");
++		return TEE_ERROR_SHORT_BUFFER;
++	}
++
++	/* Check black key buffer size if type = CCM */
++	if (type == BK_CCM && bk->length < CCM_BLACK_KEY_SIZE(pk->length)) {
++		LIB_TRACE("BK length too short");
++		return TEE_ERROR_SHORT_BUFFER;
++	}
++
++	/* Fill black key data structure */
++	bk_key.type = type;
++	bk_key.alg = alg;
++	bk_key.pk.data = pk->data;
++	bk_key.pk.length = pk->length;
++	bk_key.bk.data = bk->data;
++	bk_key.bk.length = bk->length;
++
++	/* Operate */
++	ret = bkdrv->encapsulate(&bk_key);
++
++	/* Update the size of the encapsulated key */
++	bk->length = bk_key.bk.length;
++
++	if (ret)
++		LIB_TRACE("Failed to encapsulate: %x", ret);
++
++	return ret;
++}
++
++/**
++ * @brief Sign data using a black key.
++ *
++ * @param[in] alg       CAAM cryptographic algorithm id
++ * @param[in] type      Encapsulation type
++ * @param[in] key       Key array
++ * @param[in] key_comp_count    Black keys array size
++ * @param[in] src       Source data
++ * @param[in/out] dst   Destination data
++ * @param[in] rsa_id    ID of the type of RSA key
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result bk_sign(enum drvcrypt_algo_id alg, enum bk_type type,
++		   const struct cryptobuf key[], size_t key_comp_count,
++		   const struct cryptobuf *src, struct cryptobuf *dst,
++		   enum drvcrypt_rsa_id rsa_id)
++{
++	TEE_Result ret;
++	struct drvcrypt_bk_data bk_data = { 0 };
++	struct drvcrypt_bk *bkdrv = NULL;
++	size_t key_idx;
++
++	bkdrv = drvcrypt_get_ops(CRYPTO_BK);
++	if (!bkdrv) {
++		LIB_TRACE("Black key is not supported");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	/* Check input parameters */
++	if (!key || !src || !dst) {
++		LIB_TRACE("One of the input data is not defined");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check keys count */
++	if (key_comp_count >= BK_MAX_KEYS || key_comp_count < 1) {
++		LIB_TRACE("Key counts incorrect");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check if at least one key data is defined */
++	if (!(key[0].data)) {
++		LIB_TRACE("Black key buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check Input data */
++	if (!src->data) {
++		LIB_TRACE("BK buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check Output data */
++	if (!dst->data) {
++		LIB_TRACE("BK buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check BK Type */
++	if (type >= BK_MAX_TYPE) {
++		LIB_TRACE("BK type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check Algorithm Id */
++	if (alg >= CRYPTO_MAX_ALGO) {
++		LIB_TRACE("BK type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Fill in data structure */
++	bk_data.type = type;
++	bk_data.alg = alg;
++	bk_data.src.data = src->data;
++	bk_data.src.length = src->length;
++	bk_data.dst.data = dst->data;
++	bk_data.dst.length = dst->length;
++
++	for (key_idx = 0; key_idx < key_comp_count; key_idx++) {
++		bk_data.key[key_idx].data = key[key_idx].data;
++		bk_data.key[key_idx].length = key[key_idx].length;
++	}
++
++	bk_data.key_sz = key_comp_count;
++	bk_data.rsa_id = rsa_id;
++
++	ret = bkdrv->sign(&bk_data);
++
++	/* Return the size of dest data */
++	dst->length = bk_data.dst.length;
++
++	if (ret)
++		LIB_TRACE("BK type is not correct");
++
++	return ret;
++}
+diff --git a/core/drivers/crypto/crypto_api/bk/blob.c b/core/drivers/crypto/crypto_api/bk/blob.c
+new file mode 100644
+index 00000000..1944d07d
+--- /dev/null
++++ b/core/drivers/crypto/crypto_api/bk/blob.c
+@@ -0,0 +1,188 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019 NXP
++ * @Copyright 2021 NXP
++ *
++ * @file    blob.c
++ *
++ * @brief   Cryptographic library using the NXP CAAM driver.\n
++ *          Blob crypto_* interface implementation.
++ */
++
++/* Global includes */
++#include <crypto/crypto.h>
++#include <trace.h>
++
++/* Library includes */
++#include <drvcrypt_blob.h>
++
++#define LIB_DEBUG
++#ifdef LIB_DEBUG
++#define LIB_TRACE EMSG
++#else
++#define LIB_TRACE(...)
++#endif
++
++/**
++ * @brief Encapsulates input data.
++ *  Resulting blob is the input length + 48 bytes
++ *
++ * @param[in] type       Type of key
++ * @param[in] key        Key derivation (must be 128 bits length)
++ * @param[in] payload    Data to encapsulate
++ *
++ * @param[in/out] blob   Resulting blob. The maximum length of the blob
++ *                       buffer in bytes must be given as input
++ *                       (blob length >= payload length + 48 bytes)
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result blob_encapsulate(enum bk_type type, uint32_t pk_size,
++			    const uint8_t *key, const struct cryptobuf *payload,
++			    struct cryptobuf *blob)
++{
++	TEE_Result ret;
++	struct drvcrypt_blob_data blob_data = { 0 };
++	struct drvcrypt_blob *blobdrv = NULL;
++
++	blobdrv = drvcrypt_get_ops(CRYPTO_BLOB);
++	if (!blobdrv) {
++		LIB_TRACE("Blob is not supported");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	/* Check input parameters */
++	if (!key || !payload || !blob) {
++		LIB_TRACE("One of the input data is not defined");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check payload data is defined */
++	if (!payload->data) {
++		LIB_TRACE("Payload buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check blob data is defined and big enough */
++	if (!blob->data) {
++		LIB_TRACE("Blob buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if ((blob->length - BLOB_PAD_SIZE) < pk_size) {
++		LIB_TRACE("Blob length too short");
++		return TEE_ERROR_SHORT_BUFFER;
++	}
++
++	/* Check key Type */
++	if (type >= BK_MAX_TYPE) {
++		LIB_TRACE("Key type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	blob_data.type = type;
++	blob_data.encaps = true;
++	blob_data.pk_size = pk_size;
++	blob_data.key.data = (uint8_t *)key;
++	blob_data.key.length = BLOB_KEY_MODIFIER_BYTES;
++	blob_data.payload.data = payload->data;
++	blob_data.payload.length = payload->length;
++	blob_data.blob.data = blob->data;
++	blob_data.blob.length = blob->length;
++
++	ret = blobdrv->operate(&blob_data);
++	/* Return the size of the encapsulated blob */
++	blob->length = blob_data.blob.length;
++
++	if (ret)
++		LIB_TRACE("Encapsulation failed");
++
++	return ret;
++}
++
++/**
++ * @brief Decapsulates input blob.
++ *  Resulting data is the blob length - 48 bytes
++ *
++ * @param[in] type         Type of key
++ * @param[in] key          Key derivation (must be 128 bits length)
++ * @param[in] blob         Resulting blob.
++ *
++ * @param[in/out] payload  Data to decapsulate. The maximum length of the
++ *                         buffer in bytes must be given as input
++ *                         (payload length >= blob length - 48 bytes)
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result blob_decapsulate(enum bk_type type, const uint8_t *key,
++			    struct cryptobuf *payload,
++			    const struct cryptobuf *blob)
++{
++	TEE_Result ret;
++
++	struct drvcrypt_blob_data blob_data = { 0 };
++	struct drvcrypt_blob *blobdrv = NULL;
++
++	blobdrv = drvcrypt_get_ops(CRYPTO_BLOB);
++	if (!blobdrv) {
++		LIB_TRACE("Blob is not supported");
++		return TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	/* Check input parameters */
++	if (!key || !payload || !blob) {
++		LIB_TRACE("One of the input data is not defined");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check payload data is defined */
++	if (!payload->data) {
++		LIB_TRACE("Payload buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Check blob data is defined and big enough */
++	if (!blob->data) {
++		LIB_TRACE("Blob buffer error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (blob->length > (payload->length + BLOB_PAD_SIZE)) {
++		LIB_TRACE("Payload length too short");
++		return TEE_ERROR_SHORT_BUFFER;
++	}
++
++	/* Check key Type */
++	if (type >= BK_MAX_TYPE) {
++		LIB_TRACE("Key type is not correct");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	blob_data.type = type;
++	blob_data.encaps = false;
++	blob_data.key.data = (uint8_t *)key;
++	blob_data.key.length = BLOB_KEY_MODIFIER_BYTES;
++	blob_data.payload.data = payload->data;
++	blob_data.payload.length = payload->length;
++	blob_data.blob.data = blob->data;
++	blob_data.blob.length = blob->length;
++
++	ret = blobdrv->operate(&blob_data);
++	/* Return the size of the decapsulated data */
++	payload->length = blob_data.payload.length;
++
++	if (ret)
++		LIB_TRACE("Encapsulation failed");
++
++	return ret;
++}
+diff --git a/core/drivers/crypto/crypto_api/bk/sub.mk b/core/drivers/crypto/crypto_api/bk/sub.mk
+new file mode 100644
+index 00000000..bcdb6d2c
+--- /dev/null
++++ b/core/drivers/crypto/crypto_api/bk/sub.mk
+@@ -0,0 +1,2 @@
++srcs-$(CFG_CRYPTO_DRV_BK) += bk.c
++srcs-$(CFG_CRYPTO_DRV_BLOB) += blob.c
+diff --git a/core/drivers/crypto/crypto_api/include/drvcrypt.h b/core/drivers/crypto/crypto_api/include/drvcrypt.h
+index cecb4468..352dbde8 100644
+--- a/core/drivers/crypto/crypto_api/include/drvcrypt.h
++++ b/core/drivers/crypto/crypto_api/include/drvcrypt.h
+@@ -57,6 +57,8 @@ enum drvcrypt_algo_id {
+ 	CRYPTO_ECC,	 /* Asymmetric ECC driver */
+ 	CRYPTO_DH,	 /* Asymmetric DH driver */
+ 	CRYPTO_DSA,	 /* Asymmetric DSA driver */
++	CRYPTO_BK,	 /* BK driver */
++	CRYPTO_BLOB,	 /* BLOB driver */
+ 	CRYPTO_MAX_ALGO	 /* Maximum number of algo supported */
+ };
+ 
+diff --git a/core/drivers/crypto/crypto_api/include/drvcrypt_bk.h b/core/drivers/crypto/crypto_api/include/drvcrypt_bk.h
+new file mode 100644
+index 00000000..3ae98923
+--- /dev/null
++++ b/core/drivers/crypto/crypto_api/include/drvcrypt_bk.h
+@@ -0,0 +1,66 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019, 2021 NXP
++ *
++ * @file    drvcrypt_bk.h
++ *
++ * @brief   Cryptographic library using the NXP CAAM driver.\n
++ *          Key encapsulation interface library vs CAAM driver.
++ */
++#ifndef __DRVXCRYPT_BK_H__
++#define __DRVXCRYPT_BK_H__
++
++#include <tee_api_types.h>
++#include <drvcrypt.h>
++#include <drivers/caam/crypto_extension.h>
++
++/**
++ * @brief Black key structure
++ */
++struct drvcrypt_bk_key {
++	enum bk_type type;	   /* Black encryption type */
++	enum drvcrypt_algo_id alg; /* Cryptographic algorithm id */
++	struct cryptobuf pk;	   /* Plain key data payload */
++	struct cryptobuf bk;	   /* Black key of payload */
++};
++
++/*
++ * TEE_ATTR_RSA_MODULUS = 0xD0000130
++ * _tee_attr = 0xD0000130
++ * _tee_attr & 0xf00 = 0x00000100
++ * (_tee_attr & 0xf00) >> 8 = 0x00000001
++ * ((_tee_attr & 0xf00) >> 8) - 1 = 0x00000000
++ * TEE_ATTR_RSA_MODULUS          (0xD0000130) -> 0
++ * TEE_ATTR_RSA_PUBLIC_EXPONENT  (0xD0000230) -> 1
++ * TEE_ATTR_RSA_PRIVATE_EXPONENT (0xC0000330) -> 2
++ * TEE_ATTR_RSA_PRIME1           (0xC0000430) -> 3
++ * TEE_ATTR_RSA_PRIME2           (0xC0000530) -> 4
++ * TEE_ATTR_RSA_EXPONENT1        (0xC0000630) -> 5
++ * TEE_ATTR_RSA_EXPONENT2        (0xC0000730) -> 6
++ * TEE_ATTR_RSA_COEFFICIENT      (0xC0000830) -> 7
++ */
++#define TEE_ATTR_TO_RSA_KEY_IDX(_tee_attr) ((((_tee_attr) & (0xf00)) >> 8) - 1)
++
++/**
++ * @brief Black key data structure
++ */
++struct drvcrypt_bk_data {
++	enum drvcrypt_algo_id alg;	   /* Cryptographic algorithm id */
++	enum drvcrypt_rsa_id rsa_id;	   /* RSA Algorithm Id */
++	enum bk_type type;		   /* Type of black key */
++	struct cryptobuf src;		   /* Source data */
++	struct cryptobuf dst;		   /* Destination data */
++	size_t key_sz;			   /* Destination data */
++	struct cryptobuf key[BK_MAX_KEYS]; /* Holds key components */
++};
++
++/**
++ * @brief   Crypto Library Black key driver operations
++ */
++struct drvcrypt_bk {
++	/* Encapsulate key */
++	TEE_Result (*encapsulate)(struct drvcrypt_bk_key *bk_key);
++	TEE_Result (*sign)(struct drvcrypt_bk_data *bk_data);
++};
++
++#endif /* __DRVXCRYPT_BK_H__ */
+diff --git a/core/drivers/crypto/crypto_api/include/drvcrypt_blob.h b/core/drivers/crypto/crypto_api/include/drvcrypt_blob.h
+new file mode 100644
+index 00000000..1a6727a5
+--- /dev/null
++++ b/core/drivers/crypto/crypto_api/include/drvcrypt_blob.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019, 2021 NXP
++ *
++ * @file    drvcrypt_blob.h
++ *
++ * @brief   Cryptographic library using the NXP CAAM driver.\n
++ *          Blob data encapsulation interface library vs CAAM driver.
++ */
++#ifndef __DRVCRYPT_BLOB_H__
++#define __DRVCRYPT_BLOB_H__
++
++#include <tee_api_types.h>
++#include <drivers/caam/crypto_extension.h>
++
++/**
++ * @brief Blob data structure
++ */
++struct drvcrypt_blob_data {
++	enum bk_type type;	  /* Blob encryption type */
++	bool encaps;		  /* Encryption/Decryption direction */
++	size_t pk_size;		  /* Size of the plain key blackened */
++	struct cryptobuf key;	  /* Blob Key modifier */
++	struct cryptobuf payload; /* Decrypted Blob data payload */
++	struct cryptobuf blob;	  /* Encrypted Blob of payload */
++};
++
++/**
++ * @brief   Crypto Library BLOB driver operations
++ */
++struct drvcrypt_blob {
++	/* Encapsulate/Decapsulate data */
++	TEE_Result (*operate)(struct drvcrypt_blob_data *blob_data);
++};
++
++#endif /* __DRVCRYPT_BLOB_H__ */
+diff --git a/core/drivers/crypto/crypto_api/sub.mk b/core/drivers/crypto/crypto_api/sub.mk
+index ea700a4f..6d9346af 100644
+--- a/core/drivers/crypto/crypto_api/sub.mk
++++ b/core/drivers/crypto/crypto_api/sub.mk
+@@ -7,3 +7,4 @@ subdirs-$(CFG_CRYPTO_DRV_ACIPHER) += acipher
+ subdirs-$(CFG_CRYPTO_DRV_ACIPHER) += oid
+ subdirs-$(CFG_CRYPTO_DRV_CIPHER) += cipher
+ subdirs-$(CFG_CRYPTO_DRV_MAC) += mac
++subdirs-y += bk
+diff --git a/core/include/drivers/caam/crypto_extension.h b/core/include/drivers/caam/crypto_extension.h
+index 27ecc297..32b9cf64 100644
+--- a/core/include/drivers/caam/crypto_extension.h
++++ b/core/include/drivers/caam/crypto_extension.h
+@@ -94,6 +94,56 @@ enum bk_type {
+ #define CCM_OVERHEAD		      (NONCE_SIZE + IV_SIZE)
+ #define CCM_BLACK_KEY_SIZE(_key_size) (PAD_8_BYTE(_key_size) + CCM_OVERHEAD)
+ 
++#ifdef CFG_CRYPTO_DRV_BK
++
++static inline bool is_bk_type_valid(enum bk_type type)
++{
++	return (type >= PLAIN_TEXT) && (type <= BK_CCM);
++}
++
++/**
++ * @brief Encapsulates a key to a black key.
++ *
++ * @param[in] alg      Cryptographic Algorithm id
++ * @param[in] type     Type of black key
++ * @param[in] pk       Key to encapsulate
++ * @param[in/out] bk   Resulting black key.
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result bk_encapsulate(enum drvcrypt_algo_id alg, enum bk_type type,
++			  const struct cryptobuf *pk, struct cryptobuf *bk);
++
++/**
++ * @brief Sign data using a black key.
++ *
++ * @param[in] alg       CAAM cryptographic algorithm id
++ * @param[in] type      Encapsulation type
++ * @param[in] key       Key array
++ * @param[in] key_sz   Black keys array size
++ * @param[in] src       Source data
++ * @param[in/out] dst   Destination data
++ * @param[in] rsa_id    Type of RSA key
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result bk_sign(enum drvcrypt_algo_id alg, enum bk_type type,
++		   const struct cryptobuf key[], size_t key_sz,
++		   const struct cryptobuf *src, struct cryptobuf *dst,
++		   enum drvcrypt_rsa_id rsa_id);
++
++#endif /* CFG_CRYPTO_DRV_BK */
++
+ /*
+  * Blob size padding in bytes
+  */
+@@ -143,6 +193,52 @@ struct crypto_blob {
+ TEE_Result caam_blob_sm_encapsulate(struct crypto_blob *blob,
+ 				    struct crypto_sm_page *sm_page);
+ #endif /* CFG_CRYPTO_DRV_SM */
++
++/**
++ * @brief Encapsulates input data.
++ *  Resulting blob is the input length + 48 bytes
++ *
++ * @param[in] type       Type of key
++ * @param[in] pk_size    Original size of the key
++ * @param[in] key        Key derivation (must be 128 bits length)
++ * @param[in] payload    Data to encapsulate
++ * @param[in/out] blob   Resulting blob. The maximum length of the blob
++ *                       buffer in bytes must be given as input
++ *                       (size >= data_len + 48 bytes)
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result blob_encapsulate(enum bk_type type, uint32_t pk_size,
++			    const uint8_t *key, const struct cryptobuf *payload,
++			    struct cryptobuf *blob);
++
++/**
++ * @brief Decapsulates input blob.
++ *  Resulting data is the blob length - 48 bytes
++ *
++ * @param[in] type         Type of key
++ * @param[in] key          Key derivation (must be 128 bits length)
++ * @param[in/out] payload  Data to decapsulate. The maximum length of the
++ *                         buffer in bytes must be given as input
++ *                         (payload length >= blob length - 48 bytes)
++ * @param[in] blob         Resulting blob.
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++TEE_Result blob_decapsulate(enum bk_type type, const uint8_t *key,
++			    struct cryptobuf *payload,
++			    const struct cryptobuf *blob);
++
+ #endif /* CFG_CRYPTO_DRV_BLOB */
+ 
+ struct crypto_key {
+-- 
+2.35.1
+
+
+From 56395b8b984cf65ecf3f24ba5e6d0e2b4e31f094 Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Tue, 23 Nov 2021 17:24:58 +0100
+Subject: [PATCH 3/8] LFOPTEE-63 imx: pta: Add PTA for black key
+
+Add the PTA which allow to create and use black keys for ciphering and
+HMAC operations
+
+Signed-off-by: Clement Faure <clement.faure@nxp.com>
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk  |    4 +
+ core/arch/arm/plat-imx/pta/pta_bk_mx.c | 1015 ++++++++++++++++++++++++
+ core/arch/arm/plat-imx/pta/sub.mk      |    2 +
+ lib/libutee/include/pta_bk.h           |   59 ++
+ 4 files changed, 1080 insertions(+)
+ create mode 100644 core/arch/arm/plat-imx/pta/pta_bk_mx.c
+ create mode 100644 lib/libutee/include/pta_bk.h
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index 605a970a..0a1cbc6f 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -173,6 +173,10 @@ ifeq ($(CFG_IMX_DEK_HAB),y)
+ CFG_PTA_DEK ?= y
+ endif
+ 
++ifeq ($(CFG_CRYPTO_DRV_BK),y)
++CFG_BK_PTA ?= y
++endif # CFG_CRYPTO_DRV_BK
++
+ #
+ # Enable Cryptographic Driver interface
+ #
+diff --git a/core/arch/arm/plat-imx/pta/pta_bk_mx.c b/core/arch/arm/plat-imx/pta/pta_bk_mx.c
+new file mode 100644
+index 00000000..eb052c38
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_bk_mx.c
+@@ -0,0 +1,1015 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019, 2021 NXP
++ *
++ * @file    pta_bk_mx.c
++ *
++ * @brief   Pseudo Trusted Application.\n
++ *			Key Encapsulation functionality
++ */
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_bk.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <drivers/caam/crypto_extension.h>
++#include <drvcrypt_bk.h>
++#include <drvcrypt_cipher.h>
++#include <drvcrypt_mac.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/** @brief    PTA name */
++#define BK_PTA_NAME "bk.pta"
++
++struct attr_packed {
++	uint32_t id;
++	uint32_t a;
++	uint32_t b;
++};
++
++/*
++ * Cipher context
++ */
++static void *g_cipher_ctx;
++
++/*
++ * HMAC context
++ */
++static struct crypto_mac_ctx *g_hmac_ctx;
++
++static TEE_Result cryptobuf_from_attr(struct cryptobuf *buf,
++				      const TEE_Attribute *attrs,
++				      uint32_t attr_count)
++{
++	size_t i;
++
++	for (i = 0; i < attr_count; i++) {
++		/* We need only mem refs*/
++		if (attrs[i].attributeID & TEE_ATTR_BIT_VALUE)
++			return TEE_ERROR_BAD_PARAMETERS;
++
++		buf[i].data = attrs[i].content.ref.buffer;
++		buf[i].length = attrs[i].content.ref.length;
++	}
++	return TEE_SUCCESS;
++}
++
++static TEE_Result unpack_attrs(const uint8_t *buf, size_t blen,
++			       TEE_Attribute **attrs, uint32_t *attr_count)
++{
++	TEE_Result res = TEE_SUCCESS;
++	TEE_Attribute *a = NULL;
++	const struct attr_packed *ap = NULL;
++	size_t num_attrs = 0;
++	const size_t num_attrs_size = sizeof(uint32_t);
++
++	if (blen == 0)
++		goto out;
++
++	if (((uintptr_t)buf & 0x3) != 0 || blen < num_attrs_size)
++		return TEE_ERROR_BAD_PARAMETERS;
++	num_attrs = *(uint32_t *)(void *)buf;
++	if ((blen - num_attrs_size) < (num_attrs * sizeof(*ap)))
++		return TEE_ERROR_BAD_PARAMETERS;
++	ap = (const struct attr_packed *)(const void *)(buf + num_attrs_size);
++
++	if (num_attrs > 0) {
++		size_t n;
++
++		a = malloc(num_attrs * sizeof(TEE_Attribute));
++		if (!a)
++			return TEE_ERROR_OUT_OF_MEMORY;
++		for (n = 0; n < num_attrs; n++) {
++			uintptr_t p;
++
++			a[n].attributeID = ap[n].id;
++			if (ap[n].id & TEE_ATTR_BIT_VALUE) {
++				a[n].content.value.a = ap[n].a;
++				a[n].content.value.b = ap[n].b;
++				continue;
++			}
++
++			a[n].content.ref.length = ap[n].b;
++			p = (uintptr_t)ap[n].a;
++			if (p) {
++				if ((p + a[n].content.ref.length) > blen) {
++					res = TEE_ERROR_BAD_PARAMETERS;
++					goto out;
++				}
++				p += (uintptr_t)buf;
++			}
++			a[n].content.ref.buffer = (void *)p;
++		}
++	}
++
++	res = TEE_SUCCESS;
++out:
++	if (res == TEE_SUCCESS) {
++		*attrs = a;
++		*attr_count = num_attrs;
++	} else {
++		free(a);
++	}
++	return res;
++}
++
++/**
++ * @brief   Call the Cryptographic Extension API to encapsulate
++ *          a plain key into a black key.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = Cryptographic Algorithm Id
++ *     params[0].value.b = Black key type (enum PTA_BK_TYPE)
++ *     params[1].memref  = Key to encapsulate
++ *     params[2].memref  = Output black key
++ *
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result encapsulate(uint32_t param_types,
++			      TEE_Param params[TEE_NUM_PARAMS])
++{
++	TEE_Result res = TEE_ERROR_GENERIC;
++	uint32_t exp_param_types;
++	enum drvcrypt_algo_id alg;
++	enum bk_type type;
++	struct cryptobuf pk = { 0 };
++	struct cryptobuf bk = { 0 };
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_OUTPUT,
++					  TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	alg = params[0].value.a;
++	type = params[0].value.b;
++
++	/* Convert the plain key to cryptobuf object */
++	pk.data = params[1].memref.buffer;
++	pk.length = params[1].memref.size;
++
++	/* Convert the black key to cryptobuf object */
++	bk.data = params[2].memref.buffer;
++	bk.length = params[2].memref.size;
++
++	/* Sanitize */
++	if (!is_drvcrypt_algo_id_valid(alg)) {
++		DMSG("Invalid algo id %x", alg);
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto exit;
++	}
++
++	if (!is_bk_type_valid(type)) {
++		DMSG("Invalid black key type %x", type);
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto exit;
++	}
++
++	if (type != BK_ECB && type != BK_CCM) {
++		DMSG("The type of the key is not black");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto exit;
++	}
++
++	if (!pk.data || !pk.length) {
++		DMSG("Invalid input buffer %p(%zu)", pk.data, pk.length);
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto exit;
++	}
++
++	res = bk_encapsulate(alg, type, &pk, &bk);
++	params[2].memref.size = bk.length;
++
++	if (res != TEE_SUCCESS)
++		DMSG("Failed encapsulating key: %x", res);
++
++exit:
++	return res;
++}
++
++static enum drvcrypt_rsa_id tee_algo_get_rsa_id(uint32_t tee_algo)
++{
++	enum drvcrypt_rsa_id rsa_id = -1;
++
++	switch (tee_algo) {
++	case TEE_ALG_RSASSA_PKCS1_V1_5_MD5:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_V1_5_SHA1:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_V1_5_SHA224:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_V1_5_SHA256:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_V1_5_SHA384:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_V1_5_SHA512:
++		rsa_id = DRVCRYPT_RSASSA_PKCS_V1_5;
++		break;
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA1:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA224:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA384:
++		fallthrough;
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA512:
++		rsa_id = DRVCRYPT_RSASSA_PSS;
++		break;
++	case TEE_ALG_RSAES_PKCS1_V1_5:
++		rsa_id = DRVCRYPT_RSA_PKCS_V1_5;
++		break;
++	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA1:
++		fallthrough;
++	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA224:
++		fallthrough;
++	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA256:
++		fallthrough;
++	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA384:
++		fallthrough;
++	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA512:
++		rsa_id = DRVCRYPT_RSA_OAEP;
++		break;
++	case TEE_ALG_RSA_NOPAD:
++		rsa_id = DRVCRYPT_RSA_NOPAD;
++		break;
++	default:
++		rsa_id = -1;
++	}
++
++	return rsa_id;
++}
++
++/**
++ * @brief   Call the Cryptographic Extension API to sign
++ *          data using a black key.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = Cryptographic Algorithm
++ *     params[0].value.b = Black key type (enum PTA_BK_TYPE)
++ *     params[1].memref  = Black key bytes
++ *     params[2].memref  = Input data
++ *     params[3].memref  = Output data
++ *
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result sign(uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS])
++{
++	TEE_Result res = TEE_ERROR_GENERIC;
++	uint32_t exp_param_types;
++
++	struct cryptobuf src = { 0 };
++	struct cryptobuf dst = { 0 };
++	struct cryptobuf *key = NULL;
++	TEE_Attribute *key_attrs = NULL;
++	uint32_t key_attr_cnt = 0;
++	enum drvcrypt_rsa_id rsa_id = DRVCRYPT_RSA_NOPAD;
++	const size_t min_nb_expected_attributes = 2;
++	enum bk_type type = -1;
++	uint32_t tee_algo = TEE_ALG_RSA_NOPAD;
++	uint8_t *packed_key = NULL;
++	size_t packed_key_size = 0;
++	uint8_t *in_buf = NULL;
++	size_t in_size = 0;
++	uint8_t *out_buf = NULL;
++	uint32_t *out_size = 0;
++	const size_t priv_exp_idx = 0;
++	const size_t modulus_idx = 1;
++	enum drvcrypt_algo_id drvcrypt_algo = CRYPTO_RSA;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_INOUT);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	drvcrypt_algo = params[0].value.a;
++	type = params[0].value.b;
++
++	packed_key = params[1].memref.buffer;
++	packed_key_size = params[1].memref.size;
++
++	in_buf = params[2].memref.buffer;
++	in_size = params[2].memref.size;
++
++	out_buf = params[3].memref.buffer;
++	out_size = &params[3].memref.size;
++
++	/* Process input */
++	if (!in_buf || !out_buf || !in_size || !*out_size) {
++		DMSG("Buffers invalid");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!is_drvcrypt_algo_id_valid(drvcrypt_algo)) {
++		DMSG("ALGO ID is not valid");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	rsa_id = tee_algo_get_rsa_id(tee_algo);
++
++	if (!is_rsa_id_valid(rsa_id)) {
++		DMSG("RSA ID is not valid");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (rsa_id != DRVCRYPT_RSA_NOPAD) {
++		DMSG("RSA ID not supported");
++		return TEE_ERROR_NOT_SUPPORTED;
++	}
++
++	if (!is_bk_type_valid(type)) {
++		DMSG("BK type is not valid");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	res = unpack_attrs(packed_key, packed_key_size, &key_attrs,
++			   &key_attr_cnt);
++	if (res != TEE_SUCCESS) {
++		DMSG("Failed to unpack attributes");
++		goto out;
++	}
++
++	/*
++	 * We expect the first attribute to be the private exponent,
++	 * and the second to be the modulus
++	 */
++	if (key_attr_cnt < min_nb_expected_attributes) {
++		DMSG("Not enough attributes passed");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	if (key_attrs[priv_exp_idx].attributeID !=
++	    TEE_ATTR_RSA_PRIVATE_EXPONENT) {
++		DMSG("The first attribute should be the private exponent");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	if (key_attrs[modulus_idx].attributeID != TEE_ATTR_RSA_MODULUS) {
++		DMSG("The second attribute should be the modulus");
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	/* Allocate a buffer big enough for operation to succeed */
++	dst.length = key_attrs[modulus_idx].content.ref.length;
++	dst.data = malloc(dst.length);
++	if (!dst.data) {
++		DMSG("Failed to allocate memory for result");
++		res = TEE_ERROR_OUT_OF_MEMORY;
++		goto out;
++	}
++	memset(dst.data, 0, dst.length);
++
++	/* Convert the data buffer to cryptobuf object */
++	key = malloc(min_nb_expected_attributes * sizeof(struct cryptobuf));
++	if (!key) {
++		DMSG("Failed to allocate memory for key elements");
++		res = TEE_ERROR_OUT_OF_MEMORY;
++		goto out;
++	}
++
++	/* Create buffer from attributes */
++	res = cryptobuf_from_attr(key, key_attrs, min_nb_expected_attributes);
++	if (res != TEE_SUCCESS) {
++		DMSG("Failed to convert attributes to key elements");
++		goto out;
++	}
++
++	src.data = in_buf;
++	src.length = in_size;
++
++	res = bk_sign(drvcrypt_algo, type, key, key_attr_cnt, &src, &dst,
++		      rsa_id);
++	if (res != TEE_SUCCESS) {
++		DMSG("Failed signing the data");
++		goto out;
++	}
++
++	/* Copy back the data */
++	if (*out_size < dst.length) {
++		res = TEE_ERROR_SHORT_BUFFER;
++		DMSG("Buffer to copy back data too small");
++		goto out;
++	}
++
++	memcpy(out_buf, dst.data, dst.length);
++	*out_size = dst.length;
++
++out:
++	free(dst.data);
++	free(key);
++	free(key_attrs);
++	return res;
++}
++
++/* Definition from old implementation */
++#define IMX_AES_ID  BIT32(5)
++#define IMX_DES_ID  BIT32(6)
++#define IMX_DES3_ID BIT32(7)
++
++enum imxcrypt_cipher_id {
++	AES_ECB_NOPAD = IMX_AES_ID,
++	AES_CBC_NOPAD,
++	AES_CTR,
++	AES_CTS,
++	AES_XTS,
++	AES_CBC_MAC,
++	AES_CMAC,
++	MAX_AES_ID,
++	DES_ECB_NOPAD = IMX_DES_ID,
++	DES_CBC_NOPAD,
++	DES_CBC_MAC,
++	MAX_DES_ID,
++	DES3_ECB_NOPAD = IMX_DES3_ID,
++	DES3_CBC_NOPAD,
++	DES3_CBC_MAC,
++	MAX_DES3_ID,
++};
++
++static uint32_t backcomp_algo(uint32_t algo)
++{
++	uint32_t new_algo = 0;
++
++	switch (algo) {
++	case AES_ECB_NOPAD:
++		new_algo = TEE_ALG_AES_ECB_NOPAD;
++		break;
++	case AES_CBC_NOPAD:
++		new_algo = TEE_ALG_AES_CBC_NOPAD;
++		break;
++	case AES_CTR:
++		new_algo = TEE_ALG_AES_CTR;
++		break;
++	case AES_CTS:
++		new_algo = TEE_ALG_AES_CTS;
++		break;
++	case AES_XTS:
++		new_algo = TEE_ALG_AES_XTS;
++		break;
++	case AES_CBC_MAC:
++		new_algo = TEE_ALG_AES_CBC_MAC_NOPAD;
++		break;
++	case AES_CMAC:
++		new_algo = TEE_ALG_AES_CMAC;
++		break;
++	case DES_ECB_NOPAD:
++		new_algo = TEE_ALG_DES_ECB_NOPAD;
++		break;
++	case DES_CBC_NOPAD:
++		new_algo = TEE_ALG_DES_CBC_NOPAD;
++		break;
++	case DES_CBC_MAC:
++		new_algo = TEE_ALG_DES_CBC_MAC_NOPAD;
++		break;
++	case DES3_ECB_NOPAD:
++		new_algo = TEE_ALG_DES3_ECB_NOPAD;
++		break;
++	case DES3_CBC_NOPAD:
++		new_algo = TEE_ALG_DES3_CBC_NOPAD;
++		break;
++	case DES3_CBC_MAC:
++		new_algo = TEE_ALG_DES3_CBC_MAC_NOPAD;
++		break;
++	default:
++		new_algo = 0;
++	}
++
++	if (new_algo) {
++		IMSG("Value %8.8x deprecated, prefer %8.8x %s", new_algo, algo,
++		     "(TEE_ALG_) from TEE API");
++		return new_algo;
++	}
++
++	return algo;
++}
++
++/*
++ * Call the Cryptographic Extension API to allocate cipher context.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = Cipher algo ID (TEE_ALG_XXX)
++ *     params[0].value.b = 0
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result cipher_alloc(uint32_t param_types,
++			       TEE_Param params[TEE_NUM_PARAMS])
++{
++	uint32_t algo;
++	uint32_t exp_param_types = 0;
++	struct drvcrypt_cipher *ops = NULL;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					  TEE_PARAM_TYPE_NONE,
++					  TEE_PARAM_TYPE_NONE,
++					  TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	ops = drvcrypt_get_ops(CRYPTO_CIPHER);
++	if (!ops || !ops->alloc_ctx) {
++		DMSG("Cannot get cipher ops");
++		return TEE_ERROR_ITEM_NOT_FOUND;
++	}
++
++	algo = params[0].value.a;
++
++	algo = backcomp_algo(algo);
++
++	return ops->alloc_ctx(&g_cipher_ctx, algo);
++}
++
++/*
++ * Call the Cryptographic Extension API to initialize cipher context.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = 0-1 (decryption-encryption)[31] |
++ *                         key type[3:0]
++ *     params[0].value.b = Key size[15:0]
++ *     params[1].memref  = Key
++ *     params[2].memref  = IV
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result cipher_init(uint32_t param_types,
++			      TEE_Param params[TEE_NUM_PARAMS])
++{
++	uint32_t key_params, key_sizes;
++	struct drvcrypt_cipher *ops = NULL;
++	struct drvcrypt_cipher_init dinit = { 0 };
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	key_params = params[0].value.a;
++	key_sizes = params[0].value.b;
++
++	dinit.ctx = g_cipher_ctx;
++	dinit.encrypt = CIPHER_INIT_CMD_ENCRYPT(key_params);
++
++	dinit.key1.buf.data = params[1].memref.buffer;
++	dinit.key1.buf.length = params[1].memref.size;
++	dinit.key1.type = CIPHER_INIT_CMD_KEY1_TYPE(key_params);
++	dinit.key1.size = CIPHER_INIT_CMD_KEY1_SIZE(key_sizes);
++
++	dinit.iv.data = params[2].memref.buffer;
++	dinit.iv.length = params[2].memref.size;
++
++	ops = drvcrypt_get_ops(CRYPTO_CIPHER);
++	if (!ops || !ops->init) {
++		DMSG("Cannot get cipher ops");
++		return TEE_ERROR_ITEM_NOT_FOUND;
++	}
++
++	return ops->init(&dinit);
++}
++
++/*
++ * Call the Cryptographic Extension API to update cipher operation.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = 0-1 (decryption-encryption)
++ *     params[0].value.b = 0-1 (not last block-last block)
++ *     params[1].memref  = input buffer
++ *     params[2].memref  = output buffer
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result cipher_update(uint32_t param_types,
++				TEE_Param params[TEE_NUM_PARAMS])
++{
++	struct drvcrypt_cipher *ops = NULL;
++	struct drvcrypt_cipher_update dupdate = { 0 };
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_OUTPUT,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	dupdate.ctx = g_cipher_ctx;
++	dupdate.encrypt = params[0].value.a ? true : false;
++	dupdate.last = params[0].value.b ? true : false;
++	dupdate.src.data = params[1].memref.buffer;
++	dupdate.src.length = params[1].memref.size;
++	dupdate.dst.data = params[2].memref.buffer;
++	dupdate.dst.length = params[2].memref.size;
++
++	ops = drvcrypt_get_ops(CRYPTO_CIPHER);
++	if (!ops || !ops->update) {
++		DMSG("Cannot get cipher ops");
++		return TEE_ERROR_ITEM_NOT_FOUND;
++	}
++
++	return ops->update(&dupdate);
++}
++
++/*
++ * Call the Cryptographic Extension API to finalize cipher operation.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = Cipher algo ID (TEE_ALG_XXX)
++ *     params[0].value.b = 0
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ */
++static TEE_Result cipher_final(uint32_t param_types,
++			       TEE_Param params[TEE_NUM_PARAMS] __unused)
++{
++	struct drvcrypt_cipher *ops = NULL;
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	ops = drvcrypt_get_ops(CRYPTO_CIPHER);
++	if (!ops || !ops->final) {
++		DMSG("Cannot get cipher ops");
++		return TEE_ERROR_ITEM_NOT_FOUND;
++	}
++
++	ops->final(g_cipher_ctx);
++
++	return TEE_SUCCESS;
++}
++
++/*
++ * Call the Cryptographic Extension API to free cipher context.
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result cipher_free(uint32_t param_types __unused,
++			      TEE_Param params[TEE_NUM_PARAMS] __unused)
++{
++	struct drvcrypt_cipher *ops = NULL;
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	ops = drvcrypt_get_ops(CRYPTO_CIPHER);
++	if (!ops || !ops->free_ctx) {
++		DMSG("Cannot get cipher ops");
++		return TEE_ERROR_ITEM_NOT_FOUND;
++	}
++
++	ops->free_ctx(g_cipher_ctx);
++
++	return TEE_SUCCESS;
++}
++
++/*
++ * Call the Cryptographic Extension API to allocate HMAC context.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = HMAC algo ID (TEE_ALG_XXX)
++ *     params[0].value.b = 0
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result hmac_alloc(uint32_t param_types,
++			     TEE_Param params[TEE_NUM_PARAMS])
++{
++	uint32_t algo;
++	uint32_t exp_param_types = 0;
++	drvcrypt_mac_allocate mac_alloc = NULL;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					  TEE_PARAM_TYPE_NONE,
++					  TEE_PARAM_TYPE_NONE,
++					  TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	mac_alloc = drvcrypt_get_ops(CRYPTO_HMAC);
++	if (!mac_alloc) {
++		DMSG("Cannot get hmac ops");
++		return TEE_ERROR_ITEM_NOT_FOUND;
++	}
++
++	algo = params[0].value.a;
++
++	return mac_alloc(&g_hmac_ctx, algo);
++}
++
++/*
++ * Call the Cryptographic Extension API to initialize HMAC context.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = HMAC algo ID (TEE_ALG_XXX)
++ *     params[0].value.b = 0
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result hmac_init(uint32_t param_types,
++			    TEE_Param params[TEE_NUM_PARAMS] __unused)
++{
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	/* Init of the HMAC is called by hmac_conpute_key */
++
++	return TEE_SUCCESS;
++}
++
++/*
++ * Call the Cryptographic Extension API to update HMAC operation.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = HMAC algo ID (TEE_ALG_XXX)
++ *     params[0].value.b = 0
++ *     params[1].memref  = input buffer
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result hmac_update(uint32_t param_types,
++			      TEE_Param params[TEE_NUM_PARAMS])
++{
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	return ((struct crypto_mac_ctx *)g_hmac_ctx)
++		->ops->update(g_hmac_ctx, params[1].memref.buffer,
++			      params[1].memref.size);
++}
++
++/*
++ * Call the Cryptographic Extension API to finalize HMAC operation.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = HMAC algo ID (TEE_ALG_XXX)
++ *     params[0].value.b = 0
++ *     params[1].memref  = digest buffer
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ */
++static TEE_Result hmac_final(uint32_t param_types,
++			     TEE_Param params[TEE_NUM_PARAMS])
++{
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_OUTPUT,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	return ((struct crypto_mac_ctx *)g_hmac_ctx)
++		->ops->final(g_hmac_ctx, params[1].memref.buffer,
++			     params[1].memref.size);
++}
++
++/*
++ * Call the Cryptographic Extension API to free HMAC context.
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result hmac_free(uint32_t param_types __unused,
++			    TEE_Param params[TEE_NUM_PARAMS] __unused)
++{
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	((struct crypto_mac_ctx *)g_hmac_ctx)->ops->free_ctx(g_hmac_ctx);
++
++	return TEE_SUCCESS;
++}
++
++/*
++ * Call the Cryptographic Extension API to compute HMAC key.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = BK type
++ *     params[0].value.b = Original key size (before BK encapsulation)
++ *     params[1].memref  = Black key
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ */
++static TEE_Result hmac_compute_key(uint32_t param_types,
++				   TEE_Param params[TEE_NUM_PARAMS])
++{
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++						   TEE_PARAM_TYPE_MEMREF_INPUT,
++						   TEE_PARAM_TYPE_NONE,
++						   TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types) {
++		DMSG("Wrong parameter type");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	return ((struct crypto_mac_ctx *)g_hmac_ctx)
++		->ops->init(g_hmac_ctx, params[1].memref.buffer,
++			    params[1].memref.size, params[0].value.b,
++			    params[0].value.a);
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++					  uint32_t cmd_id, uint32_t param_types,
++					  TEE_Param params[TEE_NUM_PARAMS])
++{
++	switch (cmd_id) {
++	case PTA_BK_CMD_ENCAPS:
++		return encapsulate(param_types, params);
++	case PTA_BK_CMD_SIGN:
++		return sign(param_types, params);
++	case PTA_BK_CMD_CIPHER_ALLOC:
++		return cipher_alloc(param_types, params);
++	case PTA_BK_CMD_CIPHER_INIT:
++		return cipher_init(param_types, params);
++	case PTA_BK_CMD_CIPHER_UPDATE:
++		return cipher_update(param_types, params);
++	case PTA_BK_CMD_CIPHER_FINAL:
++		return cipher_final(param_types, params);
++	case PTA_BK_CMD_CIPHER_FREE:
++		return cipher_free(param_types, params);
++	case PTA_BK_CMD_HMAC_ALLOC:
++		return hmac_alloc(param_types, params);
++	case PTA_BK_CMD_HMAC_INIT:
++		return hmac_init(param_types, params);
++	case PTA_BK_CMD_HMAC_UPDATE:
++		return hmac_update(param_types, params);
++	case PTA_BK_CMD_HMAC_FINAL:
++		return hmac_final(param_types, params);
++	case PTA_BK_CMD_HMAC_FREE:
++		return hmac_free(param_types, params);
++	case PTA_BK_CMD_HMAC_COMPUTE_KEY:
++		return hmac_compute_key(param_types, params);
++	default:
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++}
++
++static void check_pta_definitions(void)
++{
++	/* Verify the exposed values stay aligned on the one used */
++	COMPILE_TIME_ASSERT((int)PTA_BK_PLAIN_TEXT == (int)PLAIN_TEXT);
++	COMPILE_TIME_ASSERT((int)PTA_BK_ECB == (int)BK_ECB);
++	COMPILE_TIME_ASSERT((int)PTA_BK_CCM == (int)BK_CCM);
++
++	COMPILE_TIME_ASSERT((int)PTA_BK_CRYPTO_CIPHER == (int)CRYPTO_CIPHER);
++	COMPILE_TIME_ASSERT((int)PTA_BK_CRYPTO_RSA == (int)CRYPTO_RSA);
++}
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++			       TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++			       void **sess_ctx)
++{
++	struct ts_session *sess;
++
++	check_pta_definitions();
++
++	/* Check if the session is opened by a TA */
++	sess = ts_get_calling_session();
++	if (!sess)
++		return TEE_ERROR_ACCESS_DENIED;
++
++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++	return TEE_SUCCESS;
++}
++
++pseudo_ta_register(.uuid = PTA_BK_PTA_UUID, .name = BK_PTA_NAME,
++		   .flags = PTA_DEFAULT_FLAGS,
++		   .open_session_entry_point = open_session,
++		   .invoke_command_entry_point = invokeCommandEntryPoint);
+diff --git a/core/arch/arm/plat-imx/pta/sub.mk b/core/arch/arm/plat-imx/pta/sub.mk
+index 1735b895..3873fd81 100644
+--- a/core/arch/arm/plat-imx/pta/sub.mk
++++ b/core/arch/arm/plat-imx/pta/sub.mk
+@@ -1,2 +1,4 @@
+ srcs-$(CFG_PTA_MP) += pta_manufact_protec.c
+ srcs-$(CFG_PTA_DEK) += pta_dek_blob.c
++srcs-$(CFG_BK_PTA) += pta_bk_mx.c
++
+diff --git a/lib/libutee/include/pta_bk.h b/lib/libutee/include/pta_bk.h
+new file mode 100644
+index 00000000..2ba46847
+--- /dev/null
++++ b/lib/libutee/include/pta_bk.h
+@@ -0,0 +1,59 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019, 2021 NXP
++ *
++ * @file    pta_bk.h
++ *
++ * @brief   PTA Black key interface identification.
++ */
++#ifndef __PTA_BK_H__
++#define __PTA_BK_H__
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ */
++#define PTA_BK_PTA_UUID \
++	{ \
++		0xf4557e21, 0xaa4f, 0x4259, \
++		{ \
++			0x90, 0xb6, 0xf9, 0x77, 0x6c, 0xee, 0xba, 0x29 \
++		} \
++	}
++
++enum PTA_BK_CMD {
++	PTA_BK_CMD_ENCAPS = 1,	     /* Encapsulate plain key into black key */
++	PTA_BK_CMD_SIGN,	     /* Sign using black key */
++	PTA_BK_CMD_CIPHER_ALLOC,     /* Allocate cipher context */
++	PTA_BK_CMD_CIPHER_INIT,	     /* Initialize cipher context */
++	PTA_BK_CMD_CIPHER_UPDATE,    /* Cipher update operation */
++	PTA_BK_CMD_CIPHER_FINAL,     /* Cipher final operation */
++	PTA_BK_CMD_CIPHER_FREE,	     /* Free cipher context */
++	PTA_BK_CMD_HMAC_ALLOC,	     /* Alloc HMAC context */
++	PTA_BK_CMD_HMAC_INIT,	     /* Initialize HMAC context */
++	PTA_BK_CMD_HMAC_UPDATE,	     /* HMAC update operation */
++	PTA_BK_CMD_HMAC_FINAL,	     /* HMAC final operation */
++	PTA_BK_CMD_HMAC_FREE,	     /* HMAC free operation */
++	PTA_BK_CMD_HMAC_COMPUTE_KEY, /* HMAC compute key operation */
++};
++
++#define CIPHER_INIT_CMD_ENCRYPT(val)   (((val) & (BIT(31))) ? true : false)
++#define CIPHER_INIT_CMD_KEY1_TYPE(val) ((val) & (GENMASK_32(3, 0)))
++#define CIPHER_INIT_CMD_KEY2_TYPE(val) (((val) & (GENMASK_32(7, 4))) >> 4)
++#define CIPHER_INIT_CMD_KEY1_SIZE(val) ((val) & (GENMASK_32(15, 0)))
++#define CIPHER_INIT_CMD_KEY2_SIZE(val) (((val) & (GENMASK_32(31, 16))) >> 16)
++
++/**
++ * @brief   PTA black key Type
++ *          Enumerate must be the same as the bk_type defined in the
++ *          crypto_extension.h
++ */
++enum pta_bk_type {
++	PTA_BK_PLAIN_TEXT, /* Plaintext key */
++	PTA_BK_ECB,	   /* Black key mode - key encrypted in AES ECB */
++	PTA_BK_CCM,	   /* Black key mode - key encrypted in AES CCM */
++};
++
++#define PTA_BK_CRYPTO_CIPHER 5
++#define PTA_BK_CRYPTO_RSA    3
++
++#endif /* __PTA_BK_H__ */
+-- 
+2.35.1
+
+
+From ceaad23b7193899ac3e962bbfda551a6dc57fea9 Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Tue, 23 Nov 2021 17:25:10 +0100
+Subject: [PATCH 4/8] LFOPTEE-63 imx: pta: Add PTA to manage blobs
+
+Add the PTA to encapsulate black key into a blob and decapsulate.
+
+Signed-off-by: Clement Faure <clement.faure@nxp.com>
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk    |   4 +
+ core/arch/arm/plat-imx/pta/pta_blob_mx.c | 247 +++++++++++++++++++++++
+ core/arch/arm/plat-imx/pta/sub.mk        |   1 +
+ lib/libutee/include/pta_blob.h           |  55 +++++
+ 4 files changed, 307 insertions(+)
+ create mode 100644 core/arch/arm/plat-imx/pta/pta_blob_mx.c
+ create mode 100644 lib/libutee/include/pta_blob.h
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index 0a1cbc6f..122dcbaa 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -177,6 +177,10 @@ ifeq ($(CFG_CRYPTO_DRV_BK),y)
+ CFG_BK_PTA ?= y
+ endif # CFG_CRYPTO_DRV_BK
+ 
++ifeq ($(CFG_CRYPTO_DRV_BLOB),y)
++CFG_BLOB_PTA ?= y
++endif # CFG_CRYPTO_DRV_BLOB
++
+ #
+ # Enable Cryptographic Driver interface
+ #
+diff --git a/core/arch/arm/plat-imx/pta/pta_blob_mx.c b/core/arch/arm/plat-imx/pta/pta_blob_mx.c
+new file mode 100644
+index 00000000..c33949c6
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta/pta_blob_mx.c
+@@ -0,0 +1,247 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/**
++ * @copyright 2019, 2021 NXP
++ *
++ * @file    pta_blob_mx.c
++ *
++ * @brief   Pseudo Trusted Application.\n
++ *			Blob Encapsulation/Decapsulation functionality
++ */
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++/* Library kernel includes */
++#include <kernel/pseudo_ta.h>
++
++/* Library libutee includes */
++#include <pta_blob.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Library crypto includes */
++#include <drivers/caam/crypto_extension.h>
++#include <drvcrypt_blob.h>
++
++/* Library crypto includes */
++#include <crypto/crypto.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/** @brief    PTA name */
++#define BLOB_PTA_NAME "blob.pta"
++
++/**
++ * @brief   Call the Crytographic Extension API to encapsulate
++ *          the given input data in the requested blob type.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = key type
++ *     params[0].value.b = original key size
++ *     params[1].memref  = Key derivation of 128 bits length
++ *     params[2].memref  = Data to encapsulate
++ *
++ *    Output:
++ *     params[3].memref  = Blob resulting
++ *                         (size >= data length + 48 bytes)
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result encapsulate(uint32_t param_types,
++			      TEE_Param params[TEE_NUM_PARAMS])
++{
++	TEE_Result res = TEE_ERROR_GENERIC;
++	uint8_t *key_modifier;
++	uint32_t key_type;
++	size_t pk_size;
++	uint32_t exp_param_types;
++	struct cryptobuf payload;
++	struct cryptobuf blob;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_OUTPUT);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	key_type = params[0].value.a;
++	pk_size = params[0].value.b;
++
++	/* Check the Key derivation */
++	if (params[1].memref.size != BLOB_KEY_MODIFIER_BYTES)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	key_modifier = params[1].memref.buffer;
++
++	/* Convert the payload to cryptobuf object */
++	payload.data = params[2].memref.buffer;
++	payload.length = params[2].memref.size;
++
++	/* Convert the blob to cryptobuf object */
++	blob.data = params[3].memref.buffer;
++	blob.length = params[3].memref.size;
++
++	res = blob_encapsulate(key_type, pk_size, key_modifier, &payload,
++			       &blob);
++
++	if (res == TEE_SUCCESS)
++		params[3].memref.size = blob.length;
++
++	return res;
++}
++
++/**
++ * @brief   Call the Crytographic Extension API to decapsulate
++ *          the given input blob in the requested blob type.
++ *
++ *  Params are:
++ *    Inputs:
++ *     params[0].value.a = blob Type (enum PTA_BLOB_TYPE)
++ *     params[1].memref  = Key derivation of 128 bits length
++ *     params[2].memref  = Blob to decapsulate
++ *
++ *    Output:
++ *     params[3].memref  = Data resulting
++ *                         (size >= blob length - 48 bytes)
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result decapsulate(uint32_t param_types,
++			      TEE_Param params[TEE_NUM_PARAMS])
++{
++	TEE_Result res = TEE_ERROR_GENERIC;
++	uint8_t *key_modifier;
++	uint32_t key_type;
++	uint32_t exp_param_types;
++	struct cryptobuf payload;
++	struct cryptobuf blob;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_INPUT,
++					  TEE_PARAM_TYPE_MEMREF_OUTPUT);
++
++	if (param_types != exp_param_types)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	key_type = params[0].value.a;
++
++	/* Check the Key modifier size */
++	if (params[1].memref.size != BLOB_KEY_MODIFIER_BYTES)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	key_modifier = params[1].memref.buffer;
++
++	/* Convert the blob to cryptobuf object */
++	blob.data = params[2].memref.buffer;
++	blob.length = params[2].memref.size;
++
++	/* Convert the payload to cryptobuf object */
++	payload.data = params[3].memref.buffer;
++	payload.length = params[3].memref.size;
++
++	res = blob_decapsulate(key_type, key_modifier, &payload, &blob);
++
++	if (res == TEE_SUCCESS)
++		params[3].memref.size = payload.length;
++
++	return res;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_OUT_OF_MEMORY     Out of memory
++ * @retval TEE_ERROR_BAD_PARAMETERS    Bad parameters
++ * @retval TEE_ERROR_NOT_IMPLEMENTED   Algorithm is not implemented
++ * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
++ * @retval TEE_ERROR_GENERIC           Generic error
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
++					  uint32_t cmd_id, uint32_t param_types,
++					  TEE_Param params[TEE_NUM_PARAMS])
++{
++	switch (cmd_id) {
++	case PTA_BLOB_CMD_ENCAPS:
++		return encapsulate(param_types, params);
++	case PTA_BLOB_CMD_DECAPS:
++		return decapsulate(param_types, params);
++	default:
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++}
++
++static void check_pta_definitions(void)
++{
++	/*
++	 * Verify that the values are the same between:
++	 * - pta_blob.h
++	 * - crypto_extension.h
++	 * for the size of a key modifier and a overhead of a blob
++	 */
++	COMPILE_TIME_ASSERT((int)PTA_BLOB_KEY_MODIFIER_SIZE ==
++			    (int)BLOB_KEY_MODIFIER_BYTES);
++	COMPILE_TIME_ASSERT((int)PTA_BLOB_PAD_SIZE == (int)BLOB_PAD_SIZE);
++}
++
++/**
++ * @brief   Open Session function verifying that only a TA opened
++ *          the current PTA
++ *
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ * @param[in]  sess_ctx       Session Identifier
++ *
++ * @retval TEE_SUCCESS                 Success
++ * @retval TEE_ERROR_ACCESS_DENIED     PTA access is denied
++ */
++static TEE_Result open_session(uint32_t param_types __unused,
++			       TEE_Param pParams[TEE_NUM_PARAMS] __unused,
++			       void **sess_ctx)
++{
++	struct ts_session *sess;
++
++	check_pta_definitions();
++
++	/* Check if the session is opened by a TA */
++	sess = ts_get_calling_session();
++	if (!sess)
++		return TEE_ERROR_ACCESS_DENIED;
++
++	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++
++	return TEE_SUCCESS;
++}
++
++pseudo_ta_register(.uuid = PTA_BLOB_PTA_UUID, .name = BLOB_PTA_NAME,
++		   .flags = PTA_DEFAULT_FLAGS,
++		   .open_session_entry_point = open_session,
++		   .invoke_command_entry_point = invokeCommandEntryPoint);
+diff --git a/core/arch/arm/plat-imx/pta/sub.mk b/core/arch/arm/plat-imx/pta/sub.mk
+index 3873fd81..69e9dee0 100644
+--- a/core/arch/arm/plat-imx/pta/sub.mk
++++ b/core/arch/arm/plat-imx/pta/sub.mk
+@@ -1,4 +1,5 @@
+ srcs-$(CFG_PTA_MP) += pta_manufact_protec.c
+ srcs-$(CFG_PTA_DEK) += pta_dek_blob.c
+ srcs-$(CFG_BK_PTA) += pta_bk_mx.c
++srcs-$(CFG_BLOB_PTA) += pta_blob_mx.c
+ 
+diff --git a/lib/libutee/include/pta_blob.h b/lib/libutee/include/pta_blob.h
+new file mode 100644
+index 00000000..806a6cad
+--- /dev/null
++++ b/lib/libutee/include/pta_blob.h
+@@ -0,0 +1,55 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/**
++ * @copyright 2019, 2021 NXP
++ *
++ * @file    pta_blob.h
++ *
++ * @brief   PTA Blob interface identification.
++ */
++#ifndef __PTA_BLOB_H__
++#define __PTA_BLOB_H__
++
++/**
++ * @brief   PTA UUID generated at http://www.itu.int/ITU-T/asn1/uuid.html
++ */
++#define PTA_BLOB_PTA_UUID \
++	{ \
++		0x229b29a9, 0x520, 0x4018, \
++		{ \
++			0x87, 0xa9, 0xdf, 0xa0, 0xcb, 0x8b, 0x26, 0xd6 \
++		} \
++	}
++
++/**
++ * @brief   PTA Command IDs
++ */
++enum PTA_BLOB_CMD {
++	/*
++	 * in params[0].value.a blob type
++	 * in params[0].value.b size of the plainkey
++	 * in params[1].memref key modifier
++	 * in params[2].memref key to encapsulate
++	 * out params[3].memref blob
++	 */
++	PTA_BLOB_CMD_ENCAPS = 0, /* Encapsulation */
++	/*
++	 * in params[0].value.a blob type
++	 * in params[1].memref key modifier
++	 * in params[2].memref blob
++	 * out params[3].memref key decapsulated
++	 */
++	PTA_BLOB_CMD_DECAPS, /* Decapsulation */
++};
++
++/**
++ * @brief   Blob Key Modifier size in bytes
++ */
++#define PTA_BLOB_KEY_MODIFIER_SIZE 16
++
++/**
++ * @brief   Blob PAD size in bytes (padding added to store recovering
++ *          blob key (32 bytes) and a blob MAC (16 bytes)
++ */
++#define PTA_BLOB_PAD_SIZE 48
++
++#endif /* __PTA_BLOB_H__ */
+-- 
+2.35.1
+
+
+From f1228eb9e17c08e50d840b9696da161a14991183 Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Thu, 16 Sep 2021 15:25:10 +0200
+Subject: [PATCH 5/8] LFOPTEE-63 plat-imx: conf: Increase heap size
+
+In some cases, the decryption of the firmware can failed as
+some memory cannot be allocated because there is not enough
+memory left in the heap for the big chunk to allocate
+
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+---
+ core/arch/arm/plat-imx/conf.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index fff243af..e2610698 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -555,7 +555,7 @@ endif
+ CFG_ENABLE_EMBEDDED_TESTS ?= y
+ 
+ # Set default heap size for imx platforms to 128k
+-CFG_CORE_HEAP_SIZE ?= 131072
++CFG_CORE_HEAP_SIZE ?= 384000
+ 
+ CFG_CRYPTO_SIZE_OPTIMIZATION ?= n
+ CFG_MMAP_REGIONS ?= 24
+-- 
+2.35.1
+
+
+From 173915a9cf41c0395b68b2b24a509ac9bb69a9a6 Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Thu, 6 Jan 2022 13:44:01 +0100
+Subject: [PATCH 6/8] LFOPTEE-102 Make the BK PTA works in multisesion
+
+It is not possible to restrict a PTA to be single session but
+the PTA contains global variables which could break the code in
+multi-session.
+
+This patch add the allocation of a structure bound to a session
+containing the previously used global variable so it becomes
+safe in muti-session flow.
+
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+---
+ core/arch/arm/plat-imx/pta/pta_bk_mx.c | 220 +++++++++++++++++++------
+ 1 file changed, 172 insertions(+), 48 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/pta/pta_bk_mx.c b/core/arch/arm/plat-imx/pta/pta_bk_mx.c
+index eb052c38..1959f7a1 100644
+--- a/core/arch/arm/plat-imx/pta/pta_bk_mx.c
++++ b/core/arch/arm/plat-imx/pta/pta_bk_mx.c
+@@ -9,6 +9,7 @@
+  */
+ 
+ /* Standard includes */
++#include <malloc.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -42,15 +43,12 @@ struct attr_packed {
+ 	uint32_t b;
+ };
+ 
+-/*
+- * Cipher context
+- */
+-static void *g_cipher_ctx;
+-
+-/*
+- * HMAC context
+- */
+-static struct crypto_mac_ctx *g_hmac_ctx;
++struct bk_ctx {
++	/* Cipher context */
++	void *cipher_ctx;
++	/* HMAC context */
++	struct crypto_mac_ctx *hmac_ctx;
++};
+ 
+ static TEE_Result cryptobuf_from_attr(struct cryptobuf *buf,
+ 				      const TEE_Attribute *attrs,
+@@ -539,7 +537,8 @@ static uint32_t backcomp_algo(uint32_t algo)
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result cipher_alloc(uint32_t param_types,
+-			       TEE_Param params[TEE_NUM_PARAMS])
++			       TEE_Param params[TEE_NUM_PARAMS],
++			       struct bk_ctx *bk_ctx)
+ {
+ 	uint32_t algo;
+ 	uint32_t exp_param_types = 0;
+@@ -555,6 +554,11 @@ static TEE_Result cipher_alloc(uint32_t param_types,
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
+ 	ops = drvcrypt_get_ops(CRYPTO_CIPHER);
+ 	if (!ops || !ops->alloc_ctx) {
+ 		DMSG("Cannot get cipher ops");
+@@ -565,7 +569,7 @@ static TEE_Result cipher_alloc(uint32_t param_types,
+ 
+ 	algo = backcomp_algo(algo);
+ 
+-	return ops->alloc_ctx(&g_cipher_ctx, algo);
++	return ops->alloc_ctx(&bk_ctx->cipher_ctx, algo);
+ }
+ 
+ /*
+@@ -583,7 +587,8 @@ static TEE_Result cipher_alloc(uint32_t param_types,
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result cipher_init(uint32_t param_types,
+-			      TEE_Param params[TEE_NUM_PARAMS])
++			      TEE_Param params[TEE_NUM_PARAMS],
++			      struct bk_ctx *bk_ctx)
+ {
+ 	uint32_t key_params, key_sizes;
+ 	struct drvcrypt_cipher *ops = NULL;
+@@ -598,10 +603,20 @@ static TEE_Result cipher_init(uint32_t param_types,
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!bk_ctx->cipher_ctx) {
++		EMSG("No cipher context");
++		return TEE_ERROR_BAD_STATE;
++	}
++
+ 	key_params = params[0].value.a;
+ 	key_sizes = params[0].value.b;
+ 
+-	dinit.ctx = g_cipher_ctx;
++	dinit.ctx = bk_ctx->cipher_ctx;
+ 	dinit.encrypt = CIPHER_INIT_CMD_ENCRYPT(key_params);
+ 
+ 	dinit.key1.buf.data = params[1].memref.buffer;
+@@ -635,7 +650,8 @@ static TEE_Result cipher_init(uint32_t param_types,
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result cipher_update(uint32_t param_types,
+-				TEE_Param params[TEE_NUM_PARAMS])
++				TEE_Param params[TEE_NUM_PARAMS],
++				struct bk_ctx *bk_ctx)
+ {
+ 	struct drvcrypt_cipher *ops = NULL;
+ 	struct drvcrypt_cipher_update dupdate = { 0 };
+@@ -649,7 +665,17 @@ static TEE_Result cipher_update(uint32_t param_types,
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
+-	dupdate.ctx = g_cipher_ctx;
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!bk_ctx->cipher_ctx) {
++		EMSG("No cipher context");
++		return TEE_ERROR_BAD_STATE;
++	}
++
++	dupdate.ctx = bk_ctx->cipher_ctx;
+ 	dupdate.encrypt = params[0].value.a ? true : false;
+ 	dupdate.last = params[0].value.b ? true : false;
+ 	dupdate.src.data = params[1].memref.buffer;
+@@ -679,7 +705,8 @@ static TEE_Result cipher_update(uint32_t param_types,
+  *
+  */
+ static TEE_Result cipher_final(uint32_t param_types,
+-			       TEE_Param params[TEE_NUM_PARAMS] __unused)
++			       TEE_Param params[TEE_NUM_PARAMS] __unused,
++			       struct bk_ctx *bk_ctx)
+ {
+ 	struct drvcrypt_cipher *ops = NULL;
+ 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+@@ -692,13 +719,23 @@ static TEE_Result cipher_final(uint32_t param_types,
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!bk_ctx->cipher_ctx) {
++		EMSG("No cipher context");
++		return TEE_ERROR_BAD_STATE;
++	}
++
+ 	ops = drvcrypt_get_ops(CRYPTO_CIPHER);
+ 	if (!ops || !ops->final) {
+ 		DMSG("Cannot get cipher ops");
+ 		return TEE_ERROR_ITEM_NOT_FOUND;
+ 	}
+ 
+-	ops->final(g_cipher_ctx);
++	ops->final(bk_ctx->cipher_ctx);
+ 
+ 	return TEE_SUCCESS;
+ }
+@@ -710,7 +747,8 @@ static TEE_Result cipher_final(uint32_t param_types,
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result cipher_free(uint32_t param_types __unused,
+-			      TEE_Param params[TEE_NUM_PARAMS] __unused)
++			      TEE_Param params[TEE_NUM_PARAMS] __unused,
++			      struct bk_ctx *bk_ctx)
+ {
+ 	struct drvcrypt_cipher *ops = NULL;
+ 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
+@@ -723,13 +761,24 @@ static TEE_Result cipher_free(uint32_t param_types __unused,
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!bk_ctx->cipher_ctx) {
++		EMSG("No cipher context");
++		return TEE_ERROR_BAD_STATE;
++	}
++
+ 	ops = drvcrypt_get_ops(CRYPTO_CIPHER);
+ 	if (!ops || !ops->free_ctx) {
+ 		DMSG("Cannot get cipher ops");
+ 		return TEE_ERROR_ITEM_NOT_FOUND;
+ 	}
+ 
+-	ops->free_ctx(g_cipher_ctx);
++	ops->free_ctx(bk_ctx->cipher_ctx);
++	bk_ctx->cipher_ctx = NULL;
+ 
+ 	return TEE_SUCCESS;
+ }
+@@ -746,7 +795,8 @@ static TEE_Result cipher_free(uint32_t param_types __unused,
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result hmac_alloc(uint32_t param_types,
+-			     TEE_Param params[TEE_NUM_PARAMS])
++			     TEE_Param params[TEE_NUM_PARAMS],
++			     struct bk_ctx *bk_ctx)
+ {
+ 	uint32_t algo;
+ 	uint32_t exp_param_types = 0;
+@@ -762,6 +812,11 @@ static TEE_Result hmac_alloc(uint32_t param_types,
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
+ 	mac_alloc = drvcrypt_get_ops(CRYPTO_HMAC);
+ 	if (!mac_alloc) {
+ 		DMSG("Cannot get hmac ops");
+@@ -770,7 +825,7 @@ static TEE_Result hmac_alloc(uint32_t param_types,
+ 
+ 	algo = params[0].value.a;
+ 
+-	return mac_alloc(&g_hmac_ctx, algo);
++	return mac_alloc(&bk_ctx->hmac_ctx, algo);
+ }
+ 
+ /*
+@@ -785,7 +840,8 @@ static TEE_Result hmac_alloc(uint32_t param_types,
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result hmac_init(uint32_t param_types,
+-			    TEE_Param params[TEE_NUM_PARAMS] __unused)
++			    TEE_Param params[TEE_NUM_PARAMS] __unused,
++			    struct bk_ctx *bk_ctx __unused)
+ {
+ 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+ 						   TEE_PARAM_TYPE_NONE,
+@@ -815,20 +871,33 @@ static TEE_Result hmac_init(uint32_t param_types,
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result hmac_update(uint32_t param_types,
+-			      TEE_Param params[TEE_NUM_PARAMS])
++			      TEE_Param params[TEE_NUM_PARAMS],
++			      struct bk_ctx *bk_ctx)
+ {
+ 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+ 						   TEE_PARAM_TYPE_MEMREF_INPUT,
+ 						   TEE_PARAM_TYPE_NONE,
+ 						   TEE_PARAM_TYPE_NONE);
++	struct crypto_mac_ctx *mac_ctx = NULL;
+ 
+ 	if (param_types != exp_param_types) {
+ 		DMSG("Wrong parameter type");
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
+-	return ((struct crypto_mac_ctx *)g_hmac_ctx)
+-		->ops->update(g_hmac_ctx, params[1].memref.buffer,
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!bk_ctx->hmac_ctx) {
++		EMSG("No cipher context");
++		return TEE_ERROR_BAD_STATE;
++	}
++
++	mac_ctx = bk_ctx->hmac_ctx;
++
++	return mac_ctx->ops->update(mac_ctx, params[1].memref.buffer,
+ 			      params[1].memref.size);
+ }
+ 
+@@ -846,20 +915,33 @@ static TEE_Result hmac_update(uint32_t param_types,
+  *
+  */
+ static TEE_Result hmac_final(uint32_t param_types,
+-			     TEE_Param params[TEE_NUM_PARAMS])
++			     TEE_Param params[TEE_NUM_PARAMS],
++			     struct bk_ctx *bk_ctx)
+ {
+ 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+ 						   TEE_PARAM_TYPE_MEMREF_OUTPUT,
+ 						   TEE_PARAM_TYPE_NONE,
+ 						   TEE_PARAM_TYPE_NONE);
++	struct crypto_mac_ctx *mac_ctx = NULL;
+ 
+ 	if (param_types != exp_param_types) {
+ 		DMSG("Wrong parameter type");
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
+-	return ((struct crypto_mac_ctx *)g_hmac_ctx)
+-		->ops->final(g_hmac_ctx, params[1].memref.buffer,
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!bk_ctx->hmac_ctx) {
++		EMSG("No cipher context");
++		return TEE_ERROR_BAD_STATE;
++	}
++
++	mac_ctx = bk_ctx->hmac_ctx;
++
++	return mac_ctx->ops->final(mac_ctx, params[1].memref.buffer,
+ 			     params[1].memref.size);
+ }
+ 
+@@ -870,19 +952,33 @@ static TEE_Result hmac_final(uint32_t param_types,
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result hmac_free(uint32_t param_types __unused,
+-			    TEE_Param params[TEE_NUM_PARAMS] __unused)
++			    TEE_Param params[TEE_NUM_PARAMS] __unused,
++			    struct bk_ctx *bk_ctx)
+ {
+ 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
+ 						   TEE_PARAM_TYPE_NONE,
+ 						   TEE_PARAM_TYPE_NONE,
+ 						   TEE_PARAM_TYPE_NONE);
++	struct crypto_mac_ctx *mac_ctx = NULL;
+ 
+ 	if (param_types != exp_param_types) {
+ 		DMSG("Wrong parameter type");
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
+-	((struct crypto_mac_ctx *)g_hmac_ctx)->ops->free_ctx(g_hmac_ctx);
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!bk_ctx->hmac_ctx) {
++		EMSG("No cipher context");
++		return TEE_ERROR_BAD_STATE;
++	}
++
++	mac_ctx = bk_ctx->hmac_ctx;
++	mac_ctx->ops->free_ctx(mac_ctx);
++	bk_ctx->hmac_ctx = NULL;
+ 
+ 	return TEE_SUCCESS;
+ }
+@@ -900,20 +996,33 @@ static TEE_Result hmac_free(uint32_t param_types __unused,
+  * @param[in]  params         Buffer parameters
+  */
+ static TEE_Result hmac_compute_key(uint32_t param_types,
+-				   TEE_Param params[TEE_NUM_PARAMS])
++				   TEE_Param params[TEE_NUM_PARAMS],
++				   struct bk_ctx *bk_ctx)
+ {
+ 	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+ 						   TEE_PARAM_TYPE_MEMREF_INPUT,
+ 						   TEE_PARAM_TYPE_NONE,
+ 						   TEE_PARAM_TYPE_NONE);
++	struct crypto_mac_ctx *mac_ctx = NULL;
+ 
+ 	if (param_types != exp_param_types) {
+ 		DMSG("Wrong parameter type");
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
+-	return ((struct crypto_mac_ctx *)g_hmac_ctx)
+-		->ops->init(g_hmac_ctx, params[1].memref.buffer,
++	if (!bk_ctx) {
++		EMSG("No context for the TA session");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!bk_ctx->hmac_ctx) {
++		EMSG("No cipher context");
++		return TEE_ERROR_BAD_STATE;
++	}
++
++	mac_ctx = bk_ctx->hmac_ctx;
++
++	return mac_ctx->ops->init(mac_ctx, params[1].memref.buffer,
+ 			    params[1].memref.size, params[0].value.b,
+ 			    params[0].value.a);
+ }
+@@ -933,37 +1042,39 @@ static TEE_Result hmac_compute_key(uint32_t param_types,
+  * @retval TEE_ERROR_SHORT_BUFFER      Output buffer too short
+  * @retval TEE_ERROR_GENERIC           Generic error
+  */
+-static TEE_Result invokeCommandEntryPoint(void *sess_ctx __unused,
+-					  uint32_t cmd_id, uint32_t param_types,
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
++					  uint32_t param_types,
+ 					  TEE_Param params[TEE_NUM_PARAMS])
+ {
++	struct bk_ctx *bk_ctx = sess_ctx;
++
+ 	switch (cmd_id) {
+ 	case PTA_BK_CMD_ENCAPS:
+ 		return encapsulate(param_types, params);
+ 	case PTA_BK_CMD_SIGN:
+ 		return sign(param_types, params);
+ 	case PTA_BK_CMD_CIPHER_ALLOC:
+-		return cipher_alloc(param_types, params);
++		return cipher_alloc(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_CIPHER_INIT:
+-		return cipher_init(param_types, params);
++		return cipher_init(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_CIPHER_UPDATE:
+-		return cipher_update(param_types, params);
++		return cipher_update(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_CIPHER_FINAL:
+-		return cipher_final(param_types, params);
++		return cipher_final(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_CIPHER_FREE:
+-		return cipher_free(param_types, params);
++		return cipher_free(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_HMAC_ALLOC:
+-		return hmac_alloc(param_types, params);
++		return hmac_alloc(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_HMAC_INIT:
+-		return hmac_init(param_types, params);
++		return hmac_init(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_HMAC_UPDATE:
+-		return hmac_update(param_types, params);
++		return hmac_update(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_HMAC_FINAL:
+-		return hmac_final(param_types, params);
++		return hmac_final(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_HMAC_FREE:
+-		return hmac_free(param_types, params);
++		return hmac_free(param_types, params, bk_ctx);
+ 	case PTA_BK_CMD_HMAC_COMPUTE_KEY:
+-		return hmac_compute_key(param_types, params);
++		return hmac_compute_key(param_types, params, bk_ctx);
+ 	default:
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+@@ -995,7 +1106,8 @@ static TEE_Result open_session(uint32_t param_types __unused,
+ 			       TEE_Param pParams[TEE_NUM_PARAMS] __unused,
+ 			       void **sess_ctx)
+ {
+-	struct ts_session *sess;
++	struct ts_session *sess = NULL;
++	struct bk_ctx *bk_ctx = NULL;
+ 
+ 	check_pta_definitions();
+ 
+@@ -1004,12 +1116,24 @@ static TEE_Result open_session(uint32_t param_types __unused,
+ 	if (!sess)
+ 		return TEE_ERROR_ACCESS_DENIED;
+ 
+-	*sess_ctx = (void *)(vaddr_t)sess->ctx->ops->get_instance_id(sess->ctx);
++	bk_ctx = calloc(1, sizeof(struct bk_ctx));
++	if (!bk_ctx)
++		return TEE_ERROR_OUT_OF_MEMORY;
++
++	*sess_ctx = bk_ctx;
+ 
+ 	return TEE_SUCCESS;
+ }
+ 
++static void close_session(void *sess_ctx)
++{
++	struct bk_ctx *bk_ctx = sess_ctx;
++
++	free(bk_ctx);
++}
++
+ pseudo_ta_register(.uuid = PTA_BK_PTA_UUID, .name = BK_PTA_NAME,
+ 		   .flags = PTA_DEFAULT_FLAGS,
+ 		   .open_session_entry_point = open_session,
++		   .close_session_entry_point = close_session,
+ 		   .invoke_command_entry_point = invokeCommandEntryPoint);
+-- 
+2.35.1
+
+
+From 0b8620e37dcbc032bb1ef1c0a9e34fe77224892b Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Wed, 4 May 2022 10:10:21 +0200
+Subject: [PATCH 7/8] LFOPTEE-140 core: driver: crypto: Remove Flag enabled by
+ force
+
+Some flag were hardcoded to enable in the code removing the
+configuration.
+
+We remove those hardcoded enable
+
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+---
+ core/drivers/crypto/caam/bk/caam_bk.c  | 3 ---
+ core/drivers/crypto/crypto_api/bk/bk.c | 7 ++++---
+ 2 files changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/core/drivers/crypto/caam/bk/caam_bk.c b/core/drivers/crypto/caam/bk/caam_bk.c
+index 3f518ac6..9efa3195 100644
+--- a/core/drivers/crypto/caam/bk/caam_bk.c
++++ b/core/drivers/crypto/caam/bk/caam_bk.c
+@@ -39,14 +39,12 @@
+ /*
+  * Debug Macros
+  */
+-#define BK_DEBUG
+ #ifdef BK_DEBUG
+ #define BK_TRACE DRV_TRACE
+ #else
+ #define BK_TRACE(...)
+ #endif
+ 
+-#define DUMP_DESC
+ #ifdef DUMP_DESC
+ #define BK_DUMPDESC(desc) \
+ 	{ \
+@@ -57,7 +55,6 @@
+ #define BK_DUMPDESC(desc)
+ #endif
+ 
+-#define DUMP_BUF
+ #ifdef DUMP_BUF
+ #define BK_DUMPBUF DRV_DUMPBUF
+ #else
+diff --git a/core/drivers/crypto/crypto_api/bk/bk.c b/core/drivers/crypto/crypto_api/bk/bk.c
+index c0c43ba2..8e258655 100644
+--- a/core/drivers/crypto/crypto_api/bk/bk.c
++++ b/core/drivers/crypto/crypto_api/bk/bk.c
+@@ -16,7 +16,6 @@
+ /* Library includes */
+ #include <drvcrypt_bk.h>
+ 
+-#define LIB_DEBUG
+ #ifdef LIB_DEBUG
+ #define LIB_TRACE EMSG
+ #else
+@@ -107,8 +106,9 @@ TEE_Result bk_encapsulate(enum drvcrypt_algo_id alg, enum bk_type type,
+ 	/* Update the size of the encapsulated key */
+ 	bk->length = bk_key.bk.length;
+ 
+-	if (ret)
++	if (ret) {
+ 		LIB_TRACE("Failed to encapsulate: %x", ret);
++	}
+ 
+ 	return ret;
+ }
+@@ -210,8 +210,9 @@ TEE_Result bk_sign(enum drvcrypt_algo_id alg, enum bk_type type,
+ 	/* Return the size of dest data */
+ 	dst->length = bk_data.dst.length;
+ 
+-	if (ret)
++	if (ret) {
+ 		LIB_TRACE("BK type is not correct");
++	}
+ 
+ 	return ret;
+ }
+-- 
+2.35.1
+
+
+From fd1971e6ee57b8991959eaf69fb9317e1e9e66e9 Mon Sep 17 00:00:00 2001
+From: Franck LENORMAND <franck.lenormand@nxp.com>
+Date: Wed, 4 May 2022 11:06:56 +0200
+Subject: [PATCH 8/8] LFOPTEE-140 core: driver: crypto Remove logs which can
+ expose key material
+
+This patch removes some occurrences when logs could expose secret
+data
+
+Signed-off-by: Franck LENORMAND <franck.lenormand@nxp.com>
+---
+ core/drivers/crypto/caam/bk/caam_bk.c         | 3 ---
+ core/drivers/crypto/caam/hash/caam_hash_mac.c | 3 ---
+ 2 files changed, 6 deletions(-)
+
+diff --git a/core/drivers/crypto/caam/bk/caam_bk.c b/core/drivers/crypto/caam/bk/caam_bk.c
+index 9efa3195..47eaa0cf 100644
+--- a/core/drivers/crypto/caam/bk/caam_bk.c
++++ b/core/drivers/crypto/caam/bk/caam_bk.c
+@@ -230,8 +230,6 @@ static TEE_Result do_encapsulate(struct drvcrypt_bk_key *bk_key)
+ 		goto exit_operate;
+ 	}
+ 
+-	BK_DUMPBUF("Input", bk_key->pk.data, bk_key->pk.length);
+-
+ 	ret = caam_dmaobj_output_sgtbuf(&dst, bk_key->bk.data,
+ 					bk_key->bk.length, bk_size);
+ 	if (ret) {
+@@ -268,7 +266,6 @@ static TEE_Result do_encapsulate(struct drvcrypt_bk_key *bk_key)
+ 
+ 		ret = TEE_SUCCESS;
+ 		bk_key->bk.length = bk_size;
+-		BK_DUMPBUF("Output", bk_key->bk.data, bk_key->bk.length);
+ 	} else {
+ 		BK_TRACE("CAAM Status 0x%08" PRIx32 "", jobctx.status);
+ 		ret = TEE_ERROR_GENERIC;
+diff --git a/core/drivers/crypto/caam/hash/caam_hash_mac.c b/core/drivers/crypto/caam/hash/caam_hash_mac.c
+index a5074b05..c38a540d 100644
+--- a/core/drivers/crypto/caam/hash/caam_hash_mac.c
++++ b/core/drivers/crypto/caam/hash/caam_hash_mac.c
+@@ -151,7 +151,6 @@ static TEE_Result do_hmac_init(struct crypto_mac_ctx *ctx, const uint8_t *inkey,
+ 
+ 	HASH_TRACE("HMAC key %p(%zu) type: %d size: %zu -> splitkey %zu", inkey,
+ 		   len, type, ikey_origin, hmac_ctx->key.buf.length);
+-	HASH_DUMPBUF("Input Key", inkey, len);
+ 
+ 	/* Allocate the job descriptor */
+ 	desc = caam_calloc_desc(KEY_COMPUTE_DESC_ENTRIES);
+@@ -220,8 +219,6 @@ static TEE_Result do_hmac_init(struct crypto_mac_ctx *ctx, const uint8_t *inkey,
+ 	if (retstatus == CAAM_NO_ERROR) {
+ 		cache_operation(TEE_CACHEINVALIDATE, hmac_ctx->key.buf.data,
+ 				hmac_ctx->key.buf.length);
+-		HASH_DUMPBUF("Split Key", hmac_ctx->key.buf.data,
+-			     hmac_ctx->key.buf.length);
+ 
+ 		ret = TEE_SUCCESS;
+ 	} else {
+-- 
+2.35.1
+
