@@ -45,20 +45,21 @@ $ bitbake core-image-minimal
 
 ### Build OPTEE OS and flash.bin separately in Yocto
 ***1. Apply OPTEE OS patch to OPTEE OS source:***
-```
-$ cd <yocto-dir>/<build-dir>/tmp/work/imx8mmevk-poky-linux/optee-os-imx/git-r0/git/
-```
 For **4.14.98_2.0.0 BSP**
 ```
+$ cd <yocto-dir>/<build-dir>/tmp/work/<MACHINE>-poky-linux/optee-os-imx/git-r0/git/
 $ git apply imx_optee_os_security_enhancements/meta-nxp-security-enhancements/recipes-security/optee-imx/files/0001-imx-optee-os-4.14.98_2.0.0-security-enhancements.patch
 ```
 For **5.15.5_1.0.0 BSP**
 ```
+$ cd <yocto-dir>/<build-dir>/tmp/work/<MACHINE>-poky-linux/optee-os/3.15.0.imx-r0/git
 $ git apply imx_optee_os_security_enhancements/meta-nxp-security-enhancements/recipes-security/optee-imx/files/0001-imx-optee-os-5.15.5-1.0.0-security-enhacements.patch
 ```
 
 ***2. Enable CFG_IMXCRYPT in OPTEE OS configuration:***
+
 Note: Skip this step for **"5.15.5_1.0.0" BSP**
+
 Append CFG_IMXCRYPT=y to oe_runmake in optee-os bb file.
 ```
 $ vim <yocto-dir>/sources/meta-fsl-bsp-release/imx/meta-bsp/recipes-security/optee-imx/optee-os-imx_git.bb
@@ -69,6 +70,7 @@ $ vim <yocto-dir>/sources/meta-fsl-bsp-release/imx/meta-bsp/recipes-security/opt
 ```
 
 ***3. Build OPTEE OS in Yocto build:***
+
 For **4.14.98_2.0.0 BSP**
 ```
 $ cd <yocto-dir>/<build-dir>
@@ -90,4 +92,3 @@ $ bitbake imx-boot
 ```
 
 ***The final flash_evk.bin image will be available in ```<yocto-dir>/<build-dir>/tmp/deploy/images/imx8mmevk/``` directory to flash in the sdcard.***
-
