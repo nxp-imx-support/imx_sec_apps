@@ -24,7 +24,6 @@ It contains 2 seperate folders:
 
 ## Supported key type
 
-Since this is preliminary version, only AES and ECC SECP R1 keys are supported.
 Details:
 
 | Key type | Key length(bits) | Permitted algo | Usage | Lifetime | Lifecycle |
