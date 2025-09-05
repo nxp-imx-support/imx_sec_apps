@@ -1,0 +1,8 @@
+.cache/
+*.o
+bin/
+compile_commands.json
+*.pem
+*.bin
+*.d
+*.key

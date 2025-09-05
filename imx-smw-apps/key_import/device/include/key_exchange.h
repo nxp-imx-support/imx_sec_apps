@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Copyright 2025 NXP
+ */
+
+#ifndef _KEY_EXCHANGE_H_
+#define _KEY_EXCHANGE_H_
+
+#include <stdint.h>
+#include <stdio.h>
+#include "smw_status.h"
+
+#define OEM_IMPORT_MK_SK_ID 0x1
+
+int get_oem_import_puk(char *filename, uint8_t **puk, size_t *puk_len);
+enum smw_status_code get_oem_master_key_message(uint8_t* oem_import_puk, size_t puk_len, uint8_t **payload, size_t *payload_len);
+enum smw_status_code key_exchange(uint8_t *payload, size_t payload_len, uint8_t *oem_puk, size_t puk_len);
+int get_raw_payload(int argc, char* argv[]);
+int do_key_exchange(int argc, char* argv[]);
+
+#endif

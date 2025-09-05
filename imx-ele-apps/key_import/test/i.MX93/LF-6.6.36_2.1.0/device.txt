@@ -1,0 +1,103 @@
+root@imx93evk:~# ls
+ele_key_import  run_test_on_board.sh
+root@imx93evk:~# ./run_test_on_board.sh
+● nvm_daemon.service - ELE Blob Process
+     Loaded: loaded (/etc/systemd/system/nvm_daemon.service; disabled; preset: disabled)
+     Active: active (running) since Fri 2024-03-01 12:06:49 UTC; 74ms ago
+   Main PID: 669 (nvm_daemon)
+      Tasks: 1 (limit: 1635)
+     Memory: 300.0K (peak: 560.0K)
+        CPU: 5ms
+     CGroup: /system.slice/nvm_daemon.service
+             └─669 /usr/bin/nvm_daemon /etc/ele/ele_nvm_master /etc/ele/ 0
+
+Mar 01 12:06:49 imx93evk systemd[1]: Started ELE Blob Process.
+generating nxp_prod_ka_puk.bin...
+Hello, World! Aug 22 2025:02:40:15 225bf8f
+hsm_open_session success
+hsm_open_key_store_service success
+hsm_pub_key_recovery success
+Export NXP_PROD_KA_PUK success
+Exported Key: 64 bytes
+0abf4127749ccbfd06987af6a6da5bf65473aa48c4ea74b8ab19d7e66948b24cb71f0f3635a61638eccfe88dcaaed637366707a6be6b88e89cb75589067e3ccf
+
+NXP_PROD_KA_PUK written to nxp_prod_ka_puk.bin successfully.
+Please:
+      1. Upload the nxp_prod_ka_puk.bin file to the host.
+      2. Generate tlv_blob_aes_256.bin tlv_blob_p384.bin in host.
+      3. Download tlv_blob_aes_256.bin tlv_blob_p384.bin from host.
+root@imx93evk:~# ls
+ele_key_import  nxp_prod_ka_puk.bin  run_test_on_board.sh
+root@imx93evk:~#
+root@imx93evk:~# ls
+ele_key_import  nxp_prod_ka_puk.bin  oem_public_key.pem  run_test_on_board.sh  signed_msg.bin  tlv_blob_aes_256.bin  tlv_blob_p384.bin
+root@imx93evk:~# ./run_test_on_board.sh
+● nvm_daemon.service - ELE Blob Process
+     Loaded: loaded (/etc/systemd/system/nvm_daemon.service; disabled; preset: disabled)
+     Active: active (running) since Fri 2024-03-01 12:06:49 UTC; 40min ago
+   Main PID: 669 (nvm_daemon)
+      Tasks: 1 (limit: 1635)
+     Memory: 300.0K (peak: 560.0K)
+        CPU: 5ms
+     CGroup: /system.slice/nvm_daemon.service
+             └─669 /usr/bin/nvm_daemon /etc/ele/ele_nvm_master /etc/ele/ 0
+
+Mar 01 12:06:49 imx93evk systemd[1]: Started ELE Blob Process.
+nxp_prod_ka_puk.bin exists.
+oem_public_key.pem exists.
+signed_msg.bin exists.
+Hello, World! Aug 22 2025:02:40:15 225bf8f
+Signed Message: 736 bytes
+00e002890200000000000000b0000000000000000000000000000000000000000000000000000000000000000000000000000000e98700000000470000000000000000004707000000454c45090102090000000000920001010000000040000009010008000000000100000000000070a9434ee08fa0616b55844150303f5383f7ebb1cd04d1000cbdd6f36a3d59fb1c00000000000000000000000000000000000000000000000000000000000000000030029000001000c801000000000000d7b40142e16c00270102000030003000705fbcee6ac38571bd6a079322139838e1515029dd100123b7d0cf74e200a0cbfb09c1d9867efed4d31f73b728b237777b12c7b736769e03d8bdf3b19673b0e47e79d49f357f8b1c9bedd74152e5cc3563fb3aeae573cb3f5bcd5da9eaa76b77e16c00270102000030003000fec40b367c7eb9eb325aee4ae4333397ee631338b59624af9bff83e4d43e0dfd091374bcae684116def356209589fe7e87949c4a834247ac8ef3af0680d5c6a0b241e81839916fdaa2a948a30971ba00fe17241f26b5a6e742a847d72242c54ce16c002701020000300030006b8ea060c5361bfcf17c2e5b1f3e8c3d702a992b736cf7df8ffefd0c187aa20899184529223876b9e0e2de7935abb4270da8b018fb369f748f4740e9cd878df5401d6523d2ae165076ab4670d9a57f20348a4aa1197cb0c9fd2cbd7ec44abc69e16c002701020000300030001a75e66dd3aa6c5bc198b76162251f210e1c3b90ba03dfad152dd8a02a83c0d272f195981523298b2ffc98a4a99dfcb4b2666b386c61d4092362017ce222a9c7329b2ec10befeda2adf51cba7e1e7837f95f50ef99c1d70d3b1559eb998177ac00000000006800d80000000098d8c6c254d2898b9b9bf0831d797be913be0a19647807cd36821b392e6a3dc4424fa8c474adcce9d5791e7d0eeb97ea9b99b2b18cb1eee3044d847c93b1edaba419374d62f3ad88f2d7a350271af5ceb989db8a72168a7953e84dc12c70cd72
+
+OEM Import PUK: 65 bytes
+04345a46647df1547f08dc38c4a18f7fecc97d20aa913f807d7b210c264b97fdf96adba77ccb31b937d619d47c37366f1d2392a7be424bd04851a6784fa3be43c1
+
+hsm_open_session success
+hsm_open_key_store_service success
+hsm_open_key_management_service success
+hsm_key_exchange success
+Key exchange successful
+tlv_blob_aes_256.bin exists.
+Hello, World! Aug 22 2025:02:40:15 225bf8f
+TLV Blob: 141 bytes
+4015656467656c6f636b656e636c617665696d706f7274410400000000420404c01000430400000300440224004504000001004604c00200014704000000035004000000015104000000015404000000015528a08e45fe35833091c301f5c6c8bd7eedb40d9e08ab0bc91df30affc267f9983240eb1ac660b2d84f5e10577b325c0254cea1a3320f1d1734983a
+
+Key Type: 0x2400, Key Size: 256 bits
+hsm_open_session success
+
+SAB Error: SAB CMD [0x30] Resp [0xf29] - The key store is already opened by a user (load operation).
+
+Key store already created, trying to load it...
+hsm_open_key_store_service success
+hsm_open_key_management_service success
+hsm_import_key success
+Key imported successfully with ID: 0x3FFFFFFF
+tlv_blob_p384.bin exists.
+Hello, World! Aug 22 2025:02:40:15 225bf8f
+TLV Blob: 157 bytes
+4015656467656c6f636b656e636c617665696d706f727441040000000042040600060a430400003000440271124504000001804604c002000147040000000350040000000151040000000154040000000155381affe28d0ed88ef36b597ef2621673d8da2f24dc83b1f75f337385c444289d6f3401812564c855d18c21c34132b00312c7168ccefe4fad535e106b4d6fb38f1b3e5171ddd9534e3210c5
+
+Key Type: 0x7112, Key Size: 384 bits
+hsm_open_session success
+
+SAB Error: SAB CMD [0x30] Resp [0xf29] - The key store is already opened by a user (load operation).
+
+Key store already created, trying to load it...
+hsm_open_key_store_service success
+hsm_open_key_management_service success
+hsm_import_key success
+Key imported successfully with ID: 0x3FFFFFFE
+root@imx93evk:~#
+root@imx93evk:~# echo "this is Yanxing Cui from NXP" > message.txt
+root@imx93evk:~# ./ele_aes_usage encrypt CTR message.txt cipher.txt 0x3FFFFFFF
+Hello, World! Aug 25 2025:07:47:37 6ac5adc
+input data: 29 bytes
+746869732069732059616e78696e67204375692066726f6d204e58500a
+
+
+SAB Error: SAB CMD [0x30] Resp [0xf29] - The key store is already opened by a user (load operation).
+
+Key store already created, trying to load it...
+encrypt result: 29 bytes
+b53ccacd6e39b975958dcd8c1d09c20426a58a7131760d8b60cf0417bc

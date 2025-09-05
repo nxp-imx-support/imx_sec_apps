@@ -1,0 +1,115 @@
+yanxing@i9:~/repos/imx_sec_apps_upstream/imx_sec_apps/imx-ele-apps/key_import/host/scripts$ ls
+nxp_prod_ka_puk.bin  run_on_host.sh
+yanxing@i9:~/repos/imx_sec_apps_upstream/imx_sec_apps/imx-ele-apps/key_import/host/scripts$ ./run_on_host.sh 
+Generating OEM key pair...
+read EC key
+writing EC key
+Generating AES 256 key...
+Generating P521 key...
+nxp_prod_ka_puk.bin already exists.
+Hello, World! Aug 22 2025:09:58:58 225bf8f
+NXP_PROD_KA_PUK: 65 bytes
+040abf4127749ccbfd06987af6a6da5bf65473aa48c4ea74b8ab19d7e66948b24cb71f0f3635a61638eccfe88dcaaed637366707a6be6b88e89cb75589067e3ccf
+
+shared secret: 32 bytes
+7d7070d1e61e47113ddc20b5dc7a75ff68ba4750bdd96fd9019cf231ed08e676
+
+OEM Import MK SK: 32 bytes
+8ecfc013c5d1f1dfff727f5926c72e3cce0557075e38cb1c0d165dc6dd395285
+
+oem_import_warp_sk: 32 bytes
+2b1a4d063e6361819aa5d0cfe48bd4da42ce9492d06d7370e31187db39ac1cf1
+
+oem_import_cmac_sk: 32 bytes
+34b4b2e284bb1f592f8f85f98aa86b226066e0593d00d34400f72e93a20c18c5
+
+Curve type: secp384r1
+OEM Key: 48 bytes
+95abb9819b94a17809961df1d5e881d926f2a5024ac8a679887668db5d97360e0cc338f56470d2f83505b23a91e50c39
+
+Key Type: 0x7112
+
+OEM Key Wrapped: 56 bytes
+1affe28d0ed88ef36b597ef2621673d8da2f24dc83b1f75f337385c444289d6f3401812564c855d18c21c34132b00312c7168ccefe4fad53
+
+TLV blob: 139 bytes
+4015656467656c6f636b656e636c617665696d706f727441040000000042040600060a430400003000440271124504000001804604c002000147040000000350040000000151040000000154040000000155381affe28d0ed88ef36b597ef2621673d8da2f24dc83b1f75f337385c444289d6f3401812564c855d18c21c34132b00312c7168ccefe4fad53
+
+TLV blob CMAC: 16 bytes
+6b4d6fb38f1b3e5171ddd9534e3210c5
+
+TLV blob with CMAC: 157 bytes
+4015656467656c6f636b656e636c617665696d706f727441040000000042040600060a430400003000440271124504000001804604c002000147040000000350040000000151040000000154040000000155381affe28d0ed88ef36b597ef2621673d8da2f24dc83b1f75f337385c444289d6f3401812564c855d18c21c34132b00312c7168ccefe4fad535e106b4d6fb38f1b3e5171ddd9534e3210c5
+
+Hello, World! Aug 22 2025:09:58:58 225bf8f
+NXP_PROD_KA_PUK: 65 bytes
+040abf4127749ccbfd06987af6a6da5bf65473aa48c4ea74b8ab19d7e66948b24cb71f0f3635a61638eccfe88dcaaed637366707a6be6b88e89cb75589067e3ccf
+
+shared secret: 32 bytes
+7d7070d1e61e47113ddc20b5dc7a75ff68ba4750bdd96fd9019cf231ed08e676
+
+OEM Import MK SK: 32 bytes
+8ecfc013c5d1f1dfff727f5926c72e3cce0557075e38cb1c0d165dc6dd395285
+
+oem_import_warp_sk: 32 bytes
+2b1a4d063e6361819aa5d0cfe48bd4da42ce9492d06d7370e31187db39ac1cf1
+
+oem_import_cmac_sk: 32 bytes
+34b4b2e284bb1f592f8f85f98aa86b226066e0593d00d34400f72e93a20c18c5
+
+OEM Key: 32 bytes
+cf0d7a15de91ae131ac8da5fb6c04704a2f8328e7beea0661e91ee29b0fa298f
+
+Key Type: 0x2400
+
+OEM Key Wrapped: 40 bytes
+a08e45fe35833091c301f5c6c8bd7eedb40d9e08ab0bc91df30affc267f9983240eb1ac660b2d84f
+
+TLV blob: 123 bytes
+4015656467656c6f636b656e636c617665696d706f7274410400000000420404c01000430400000300440224004504000001004604c00200014704000000035004000000015104000000015404000000015528a08e45fe35833091c301f5c6c8bd7eedb40d9e08ab0bc91df30affc267f9983240eb1ac660b2d84f
+
+TLV blob CMAC: 16 bytes
+577b325c0254cea1a3320f1d1734983a
+
+TLV blob with CMAC: 141 bytes
+4015656467656c6f636b656e636c617665696d706f7274410400000000420404c01000430400000300440224004504000001004604c00200014704000000035004000000015104000000015404000000015528a08e45fe35833091c301f5c6c8bd7eedb40d9e08ab0bc91df30affc267f9983240eb1ac660b2d84f5e10577b325c0254cea1a3320f1d1734983a
+
+yanxing@i9:~/repos/imx_sec_apps_upstream/imx_sec_apps/imx-ele-apps/key_import/host/scripts$ ls
+aes256.bin  nxp_prod_ka_puk.bin  oem_p384_private.pem  oem_private_key.pem  oem_public_key.pem  run_on_host.sh  tlv_blob_aes_256.bin  tlv_blob_p384.bin
+
+AES verify:
+---
+yanxing@i9:~/repos/imx_sec_apps_upstream/imx_sec_apps/imx-ele-apps/aes_usage/scripts$ python3 aes_tool.py decrypt CTR cipher.txt plain.txt ../../key_import/host/scripts/aes256.bin 
+Decryption completed. Output written to plain.txt
+
+--- Result Preview (decrypt) ---
+this is Yanxing Cui from NXP
+
+SPSDK:
+---
+(venv) PS C:\Users\nxg13213\SPSDK\93\key_import\signed_msg> nxpimage -v signed-msg export -c signed_msg.yaml 
+INFO:spsdk.apps.nxpimage_apps.nxpimage_signed_msg:Created Signed message Image:
+Name:      Signed Message Image
+Starts:    0x0
+Ends:      0x2df
+Size:      Size: 736 B
+Alignment: 8 B
+Execution Start Address: Not defined
+Pattern:zeros
+Signed Message Image for mimx9352, Revision: latest
+
+INFO:spsdk.apps.nxpimage_apps.nxpimage_signed_msg:Created Signed message Image memory map:
+
+┌──0x0000_0000─ Signed Message Image ──┐
+│             Size: 736 B              │
+│  Signed Message Image for mimx9352,  │
+│           Revision: latest           │
+│            Pattern: zeros            │
+│┌──0x0000_0000─ Signed Message ──────┐│
+││            Size: 736 B             ││
+││Signed Message for KEY_EXCHANGE_REQ ││
+│└──0x0000_02df───────────────────────┘│
+└──0x0000_02df─────────────────────────┘
+
+INFO:spsdk.apps.nxpimage_apps.nxpimage_signed_msg:SRK hash:175125e6c4e72ebe3459b2facff70fed4c5c12e8a4df1039fdce3b498d1bf45b
+Success. (Signed message: C:/Users/nxg13213/SPSDK/93/key_import/signed_msg/signed_msg.bin created.)

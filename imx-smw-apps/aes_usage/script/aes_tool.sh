@@ -1,0 +1,1 @@
+../../../imx-ele-apps/aes_usage/scripts/aes_tool.sh

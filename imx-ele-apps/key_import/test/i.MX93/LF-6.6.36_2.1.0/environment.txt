@@ -1,0 +1,5 @@
+HW:
+    i.MX 93 A1 EVK board
+SW:
+    LF-6.6.36_2.1.0 BSP
+    LF-6.6.52_2.2.0 ELE-AP FW: ELE firmware version 2.0.0-64d8ef47
